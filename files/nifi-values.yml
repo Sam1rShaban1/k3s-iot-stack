@@ -1,0 +1,17 @@
+replicaCount: 2
+service:
+  type: ClusterIP   # Internal only
+
+resources:
+  requests:
+    cpu: 300m
+    memory: 512Mi
+  limits:
+    cpu: 700m
+    memory: 1Gi
+
+persistence:
+  enabled: true
+  storageClass: longhorn-custom
+
+javaHeap: "-Xms512m -Xmx768m"

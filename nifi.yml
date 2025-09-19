@@ -1,0 +1,24 @@
+---
+- name: Install Apache NiFi
+  hosts: rpi-master1
+  become: true
+  vars:
+    cetic_repo_name: cetic
+    cetic_repo_url: https://cetic.github.io/helm-charts
+  tasks:
+    - name: Add Cetic Helm repo
+      community.kubernetes.helm_repository:
+        name: "{{ cetic_repo_name }}"
+        repo_url: "{{ cetic_repo_url }}"
+
+    - name: Update Helm repos
+      shell: helm repo update
+
+    - name: Install NiFi
+      community.kubernetes.helm:
+        name: nifi
+        chart_ref: cetic/nifi
+        release_namespace: nifi
+        create_namespace: true
+        values_files:
+          - files/nifi-values.yaml
