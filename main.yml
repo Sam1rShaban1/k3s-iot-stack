@@ -1,0 +1,24 @@
+---
+# Step 1: Base OS tuning
+- import_playbook: pi-setup.yml
+
+# Step 2: Install k3s (multi-master + workers)
+- import_playbook: k3s-setup.yml
+
+# Step 3: MetalLB for external IPs
+- import_playbook: metallb.yml
+
+# Step 4: Longhorn storage
+- import_playbook: longhorn.yml
+
+# Step 5: EMQX broker (external entry point)
+- import_playbook: emqx.yml
+
+# Step 6: NiFi (internal only)
+- import_playbook: nifi.yml
+
+# Step 7: Kafka (internal only)
+- import_playbook: kafka.yml
+
+# Step 8: IoTDB (internal only)
+- import_playbook: iotdb.yml
