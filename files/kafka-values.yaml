@@ -1,0 +1,19 @@
+replicaCount: 3
+service:
+  type: ClusterIP   # Internal only
+
+zookeeper:
+  replicaCount: 3
+
+resources:
+  requests:
+    cpu: 400m
+    memory: 512Mi
+  limits:
+    cpu: 1
+    memory: 1Gi
+
+persistence:
+  enabled: true
+  storageClass: longhorn-custom
+
