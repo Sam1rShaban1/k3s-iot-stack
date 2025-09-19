@@ -1,0 +1,9 @@
+defaultSettings:
+  replica-count: 2
+  defaultDataPath: /var/lib/longhorn
+
+resources:
+  manager:
+    requests:
+      cpu: 100m
+      memory: 128Mi
