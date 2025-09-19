@@ -1,0 +1,24 @@
+---
+- name: Install EMQX
+  hosts: rpi-master1
+  become: true
+  vars:
+    emqx_repo_name: emqx
+    emqx_repo_url: https://repos.emqx.io/charts
+  tasks:
+    - name: Add EMQX Helm repo
+      community.kubernetes.helm_repository:
+        name: "{{ emqx_repo_name }}"
+        repo_url: "{{ emqx_repo_url }}"
+
+    - name: Update Helm repos
+      shell: helm repo update
+
+    - name: Install EMQX
+      community.kubernetes.helm:
+        name: emqx
+        chart_ref: emqx/emqx
+        release_namespace: emqx
+        create_namespace: true
+        values_files:
+          - files/emqx-values.yaml
