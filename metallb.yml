@@ -1,0 +1,27 @@
+---
+- name: Install MetalLB
+  hosts: rpi-master1
+  become: true
+  vars:
+    metallb_repo_name: metallb
+    metallb_repo_url: https://metallb.github.io/metallb
+  tasks:
+    - name: Add MetalLB Helm repo
+      community.kubernetes.helm_repository:
+        name: "{{ metallb_repo_name }}"
+        repo_url: "{{ metallb_repo_url }}"
+
+    - name: Update Helm repos
+      shell: helm repo update
+
+    - name: Install MetalLB
+      community.kubernetes.helm:
+        name: metallb
+        chart_ref: metallb/metallb
+        release_namespace: metallb-system
+        create_namespace: true
+
+    - name: Apply MetalLB config
+      kubernetes.core.k8s:
+        state: present
+        src: files/metallb-config.yaml
