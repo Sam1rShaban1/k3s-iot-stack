@@ -1,6 +1,9 @@
 # 🛰️ Raspberry Pi IoT Data Pipeline with K3s, EMQX, NiFi, Kafka, IoTDB, Longhorn, and MetalLB
 
-[span_0](start_span)This project automates the deployment of a **fault-tolerant IoT data pipeline** on a Raspberry Pi 4B cluster using **Ansible** and **K3s** (lightweight Kubernetes)[span_0](end_span). [span_1](start_span)IoT sensor data flows from the edge into EMQX, is processed by NiFi, streamed via Kafka, and stored in IoTDB[span_1](end_span). [span_2](start_span)Longhorn provides distributed persistent storage, and MetalLB handles external IPs for ingress from the edge layer[span_2](end_span).
+This project automates the deployment of a **fault-tolerant IoT data pipeline** on a Raspberry Pi 4B cluster using **Ansible** and **K3s** (lightweight Kubernetes).
+
+IoT sensor data flows from the edge into EMQX, is processed by NiFi, streamed via Kafka, and stored in IoTDB. Longhorn provides distributed persistent storage, and MetalLB handles external IPs for ingress from the edge layer.
+
 ---
 
 ## 📌 Architecture
@@ -19,41 +22,55 @@ IoT Sensors
     │  (event bus / partitioned stream)
     ▼
  Apache IoTDB (ClusterIP, persistent storage)
+```
 
- * [cite_start]EMQX → external entry point for IoT devices (MQTT)[cite: 4].
- * [cite_start]NiFi → consumes from EMQX, transforms JSON, publishes to Kafka[cite: 5].
- * [cite_start]Kafka → streaming backbone for IoT events[cite: 5].
- * [cite_start]IoTDB → time-series storage for processed IoT data[cite: 6].
- * [cite_start]Longhorn → distributed, fault-tolerant storage for stateful workloads[cite: 6].
- * [cite_start]MetalLB → provides external IPs for EMQX and optional UIs[cite: 7].
- * [cite_start]K3s → lightweight Kubernetes distribution tuned for ARM (Raspberry Pi 4B)[cite: 8].
-⚡ Features
- * [cite_start]Fully automated cluster setup with Ansible[cite: 9].
- * [cite_start]Multi-master + multi-worker k3s cluster for high availability[cite: 9].
- * [cite_start]Longhorn storage for distributed persistence across Pis[cite: 10].
- * [cite_start]MetalLB for external service IPs on your LAN[cite: 10].
- * [cite_start]ARM-optimized Helm charts with tuned CPU/memory requests for Raspberry Pi 4B 8GB[cite: 11].
- * [cite_start]Modular playbooks → re-run only the component you want (e.g. update EMQX)[cite: 12].
-🖥️ Prerequisites
- * [cite_start]Raspberry Pi 4B (8GB recommended) × at least 3 nodes (2 masters + 1 worker minimum)[cite: 13].
- * [cite_start]Pis connected via Ethernet switch on the same LAN[cite: 14].
- * [cite_start]SSH access enabled on all Pis[cite: 14].
- * [cite_start]A control machine (your laptop) with[cite: 15]:
-   * [cite_start]Ansible [cite: 15]
-   * [cite_start]kubectl [cite: 15]
-   * [cite_start]Helm [cite: 15]
-📂 Repository Structure
+-   **EMQX** → external entry point for IoT devices (MQTT).
+-   **NiFi** → consumes from EMQX, transforms JSON, publishes to Kafka.
+-   **Kafka** → streaming backbone for IoT events.
+-   **IoTDB** → time-series storage for processed IoT data.
+-   **Longhorn** → distributed, fault-tolerant storage for stateful workloads.
+-   **MetalLB** → provides external IPs for EMQX and optional UIs.
+-   **K3s** → lightweight Kubernetes distribution tuned for ARM (Raspberry Pi 4B).
+
+---
+
+## ⚡ Features
+
+-   Fully automated cluster setup with **Ansible**.
+-   **Multi-master + multi-worker** k3s cluster for high availability.
+-   **Longhorn storage** for distributed persistence across Pis.
+-   **MetalLB** for external service IPs on your LAN.
+-   ARM-optimized Helm charts with tuned CPU/memory requests for Raspberry Pi 4B 8GB.
+-   Modular playbooks → re-run only the component you want (e.g. update EMQX).
+
+---
+
+## 🖥️ Prerequisites
+
+-   Raspberry Pi 4B (8GB recommended) × **at least 3 nodes** (2 masters + 1 worker minimum).
+-   Pis connected via **Ethernet switch** on the same LAN.
+-   SSH access enabled on all Pis.
+-   A control machine (your laptop) with:
+    -   [Ansible](https://docs.ansible.com/)
+    -   [kubectl](https://kubernetes.io/docs/tasks/tools/)
+    -   [Helm](https://helm.sh/)
+
+---
+
+## 📂 Repository Structure
+
+```text
 ansible/
 ├── main.yml                # Master playbook (runs all)
 ├── pi-setup.yml            # Prepare Pis (update, cgroups, swap off)
 ├── k3s-setup.yml           # Install k3s (masters + workers)
 ├── metallb.yml             # Install MetalLB
-[span_3](start_span)├── longhorn.yml            # Install Longhorn[span_3](end_span)
-[span_4](start_span)├── emqx.yml                # Deploy EMQX broker[span_4](end_span)
-[span_5](start_span)├── nifi.yml                # Deploy NiFi[span_5](end_span)
-[span_6](start_span)├── kafka.yml               # Deploy Kafka[span_6](end_span)
-[span_7](start_span)├── iotdb.yml               # Deploy IoTDB[span_7](end_span)
-[span_8](start_span)├── inventory.ini           # Define your cluster nodes[span_8](end_span)
+├── longhorn.yml            # Install Longhorn
+├── emqx.yml                # Deploy EMQX broker
+├── nifi.yml                # Deploy NiFi
+├── kafka.yml               # Deploy Kafka
+├── iotdb.yml               # Deploy IoTDB
+├── inventory.ini           # Define your cluster nodes
 └── files/
     ├── metallb-config.yaml
     ├── longhorn-values.yaml
@@ -62,14 +79,24 @@ ansible/
     ├── nifi-values.yaml
     ├── kafka-values.yaml
     └── iotdb-values.yaml
+```
 
-⚙️ Setup & Deployment
-1. Clone the repo
-git clone [https://github.com/](https://github.com/)<your-repo>.git
+---
+
+## ⚙️ Setup & Deployment
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/<your-repo>.git
 cd ansible/
+```
 
-2. Configure inventory
-[cite_start]Edit inventory.ini with your Pi hostnames / IPs[cite: 17]:
+### 2. Configure inventory
+
+Edit `inventory.ini` with your Pi hostnames / IPs:
+
+```ini
 [rpi-master]
 rpi-master1 ansible_host=192.168.1.100 ansible_user=pi
 rpi-master2 ansible_host=192.168.1.101 ansible_user=pi
@@ -77,47 +104,74 @@ rpi-master2 ansible_host=192.168.1.101 ansible_user=pi
 [rpi-worker]
 rpi-worker1 ansible_host=192.168.1.102 ansible_user=pi
 rpi-worker2 ansible_host=192.168.1.103 ansible_user=pi
+```
 
-3. Configure MetalLB IP pool
-[cite_start]Edit files/metallb-config.yaml to match your LAN[cite: 18].
-[cite_start]Example[cite: 18]:
+### 3. Configure MetalLB IP pool
+
+Edit `files/metallb-config.yaml` to match your LAN. Make sure the range is **outside your router’s DHCP range**.
+
+Example:
+
+```yaml
 addresses:
   - 192.168.1.240-192.168.1.250
+```
 
-[cite_start]Make sure it’s outside your router’s DHCP range[cite: 18].
-4. Run the full deployment
+### 4. Run the full deployment
+
+```bash
 ansible-playbook -i inventory.ini main.yml
+```
 
-[cite_start]This will[cite: 19]:
- * [cite_start]Prepare Pis (pi-setup.yml)[cite: 19].
- * [cite_start]Install k3s masters + workers (k3s-setup.yml)[cite: 19].
- * [cite_start]Install MetalLB (metallb.yml)[cite: 20].
- * [cite_start]Install Longhorn (longhorn.yml)[cite: 20].
- * [cite_start]Deploy EMQX, NiFi, Kafka, IoTDB (*.yml)[cite: 20].
-🌐 Accessing Services
- * [cite_start]EMQX Broker (MQTT) → Accessible at the MetalLB IP (e.g. 192.168.1.240:1883)[cite: 21].
- * [cite_start]NiFi → Internal only (ClusterIP), access via port-forward if needed[cite: 22]:
-   kubectl port-forward svc/nifi 8080:8080 -n nifi
+This will:
 
- * [cite_start]Kafka → Internal only (ClusterIP), used by NiFi → IoTDB pipeline[cite: 22].
- * [cite_start]IoTDB → Internal only (ClusterIP), query from within cluster[cite: 23]:
-   kubectl exec -it <iotdb-pod> -n iotdb -- /iotdb/bin/sqlline
+1.  Prepare Pis (`pi-setup.yml`).
+2.  Install k3s masters + workers (`k3s-setup.yml`).
+3.  Install MetalLB (`metallb.yml`).
+4.  Install Longhorn (`longhorn.yml`).
+5.  Deploy EMQX, NiFi, Kafka, and IoTDB (`*.yml`).
 
- * [cite_start]Longhorn UI → Available via MetalLB IP assigned to Longhorn service[cite: 24].
-🔐 Security (optional)
- * [cite_start]Enable EMQX authentication (username/password or JWT)[cite: 25].
- * [cite_start]Secure NiFi with TLS and user logins[cite: 25].
- * [cite_start]Configure Kafka SASL/SSL if external clients needed[cite: 25].
- * [cite_start]Configure IoTDB users and roles[cite: 26].
-📊 Monitoring (optional)
-[cite_start]Deploy Prometheus + Grafana via Helm to collect metrics[cite: 27].
- * [cite_start]EMQX, NiFi, Kafka, IoTDB all expose monitoring endpoints[cite: 27].
- * [cite_start]Visualize broker load, message throughput, storage usage, etc[cite: 27].
-🚀 Next Steps
- * [cite_start]Import a NiFi flow template to connect[cite: 28]:
-   * [cite_start]MQTT (EMQX) → JSON Processing → Kafka → IoTDB[cite: 28].
- * [cite_start]Optionally automate flow deployment using NiFi REST API[cite: 28].
- * [cite_start]Add Grafana dashboards for real-time pipeline monitoring[cite: 29].
-📝 License
-[cite_start]MIT License © 2025 [cite: 29]
+---
 
+## 🌐 Accessing Services
+
+-   **EMQX Broker (MQTT)** → Accessible at the MetalLB IP (e.g. `192.168.1.240:1883`).
+-   **NiFi** → Internal only (`ClusterIP`), access via port-forward if needed:
+    ```bash
+    kubectl port-forward svc/nifi 8080:8080 -n nifi
+    ```
+-   **Kafka** → Internal only (`ClusterIP`), used by the NiFi → IoTDB pipeline.
+-   **IoTDB** → Internal only (`ClusterIP`), query from within the cluster:
+    ```bash
+    kubectl exec -it <iotdb-pod> -n iotdb -- /iotdb/bin/sqlline
+    ```
+-   **Longhorn UI** → Available via a MetalLB IP assigned to the Longhorn service.
+
+---
+
+## 🔐 Security (optional)
+
+-   Enable EMQX authentication (username/password or JWT).
+-   Secure NiFi with TLS and user logins.
+-   Configure Kafka SASL/SSL if external clients are needed.
+-   Configure IoTDB users and roles.
+
+---
+
+## 📊 Monitoring (optional)
+
+Deploy **Prometheus + Grafana** via Helm to collect metrics:
+
+-   EMQX, NiFi, Kafka, and IoTDB all expose monitoring endpoints.
+-   Visualize broker load, message throughput, storage usage, etc.
+
+---
+
+## 🚀 Next Steps
+
+-   Import a NiFi flow template to connect:
+    -   **MQTT (EMQX) → JSON Processing → Kafka → IoTDB**.
+-   Optionally automate flow deployment using the NiFi REST API.
+-   Add Grafana dashboards for real-time pipeline monitoring.
+
+---
