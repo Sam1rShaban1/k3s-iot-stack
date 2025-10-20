@@ -1,0 +1,24 @@
+---
+- name: Install Benthos
+  hosts: rpi-master1
+  become: true
+  vars:
+    benthos_repo_name: benthos
+    benthos_repo_url: https://helm.benthos.dev
+  tasks:
+    - name: Add Benthos Helm repo
+      community.kubernetes.helm_repository:
+        name: "{{ benthos_repo_name }}"
+        repo_url: "{{ benthos_repo_url }}"
+
+    - name: Update Helm repos
+      shell: helm repo update
+
+    - name: Install Benthos
+      community.kubernetes.helm:
+        name: benthos
+        chart_ref: benthos/benthos
+        release_namespace: benthos
+        create_namespace: true
+        values_files:
+          - files/benthos-values.yaml
