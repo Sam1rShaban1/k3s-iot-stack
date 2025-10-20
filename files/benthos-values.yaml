@@ -1,0 +1,28 @@
+replicaCount: 4
+
+service:
+  type: ClusterIP
+  port: 4195   # Benthos HTTP API
+  grpcPort: 4196
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 750m
+    memory: 1Gi
+
+persistence:
+  enabled: false   # messages handled in memory
+
+# configure input/output channels (MQTT -> Redpanda)
+input:
+  mqtt:
+    url: "tcp://emqx.metallb:1883"
+    qos: 2
+output:
+  kafka:
+    brokers:
+      - "redpanda.redpanda:9092"
+    topic: "iot-data"
