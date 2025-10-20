@@ -1,0 +1,49 @@
+replicaCount: 4
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: 1.5
+    memory: 2Gi
+
+persistence:
+  enabled: true
+  storageClass: longhorn-custom
+  size: 20Gi
+
+service:
+  type: ClusterIP
+  ports:
+    http: 8428
+    grpc: 8429
+
+# Cluster mode components
+vmstorage:
+  replicaCount: 4
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1.5
+      memory: 2Gi
+vminsert:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 750m
+      memory: 1Gi
+vmselect:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 750m
+      memory: 1Gi
