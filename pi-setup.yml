@@ -1,0 +1,44 @@
+---
+- name: Prepare Raspberry Pi nodes
+  hosts: all
+  become: true
+  tasks:
+
+    - name: Update and upgrade system
+      apt:
+        update_cache: yes
+        upgrade: dist
+        autoremove: yes
+
+    - name: Install essential packages
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - vim
+          - htop
+          - unzip
+          - python3-pip
+        state: present
+
+    - name: Enable cgroups for Kubernetes
+      lineinfile:
+        path: /boot/cmdline.txt
+        line: "cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory"
+        state: present
+        insertafter: EOF
+
+    - name: Disable swap
+      command: swapoff -a
+      ignore_errors: yes
+
+    - name: Comment out swap in fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^(/swapfile.*)'
+        replace: '# \1'
+
+    - name: Reboot Pis to apply kernel params
+      reboot:
+        reboot_timeout: 300
