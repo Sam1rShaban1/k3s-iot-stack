@@ -1,0 +1,9 @@
+---
+- name: Reboot Raspberry Pi nodes
+  hosts: all
+  become: true
+  tasks:
+    - name: Reboot the device
+      reboot:
+        reboot_timeout: 300
+        test_command: whoami
