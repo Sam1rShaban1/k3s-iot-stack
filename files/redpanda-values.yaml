@@ -1,0 +1,27 @@
+replicaCount: 4
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: 1.5
+    memory: 2Gi
+
+configuration:
+  developerMode: false
+  rpk:
+    seedServers:
+      - host: "redpanda.redpanda.svc.cluster.local"
+        port: 33145
+    autoCreateTopics: true
+
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: longhorn-custom
+
+# Expose service
+service:
+  type: ClusterIP
+  port: 9092
