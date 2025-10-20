@@ -1,0 +1,24 @@
+---
+- name: Install Redpanda
+  hosts: rpi-master1
+  become: true
+  vars:
+    redpanda_repo_name: vectorized
+    redpanda_repo_url: https://packages.vectorized.io/helm
+  tasks:
+    - name: Add Redpanda Helm repo
+      community.kubernetes.helm_repository:
+        name: "{{ redpanda_repo_name }}"
+        repo_url: "{{ redpanda_repo_url }}"
+
+    - name: Update Helm repos
+      shell: helm repo update
+
+    - name: Install Redpanda
+      community.kubernetes.helm:
+        name: redpanda
+        chart_ref: vectorized/redpanda
+        release_namespace: redpanda
+        create_namespace: true
+        values_files:
+          - files/redpanda-values.yaml
