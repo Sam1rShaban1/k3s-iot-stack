@@ -1,0 +1,24 @@
+---
+- name: Install VictoriaMetrics
+  hosts: rpi-master1
+  become: true
+  vars:
+    victoriametrics_repo_name: victoriametrics
+    victoriametrics_repo_url: https://victoriametrics.github.io/helm-charts/
+  tasks:
+    - name: Add VictoriaMetrics Helm repo
+      community.kubernetes.helm_repository:
+        name: "{{ victoriametrics_repo_name }}"
+        repo_url: "{{ victoriametrics_repo_url }}"
+
+    - name: Update Helm repos
+      shell: helm repo update
+
+    - name: Install VictoriaMetrics Cluster
+      community.kubernetes.helm:
+        name: victoriametrics
+        chart_ref: victoriametrics/victoria-metrics-cluster
+        release_namespace: victoriametrics
+        create_namespace: true
+        values_files:
+          - files/victoriametrics-values.yaml
