@@ -1,0 +1,49 @@
+---
+- name: Install K3s Master nodes
+  hosts: rpi-master
+  become: true
+  tasks:
+
+    - name: Download K3s install script
+      get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s_install.sh
+        mode: '0755'
+
+    - name: Install K3s master
+      shell: |
+        INSTALL_K3S_EXEC="--write-kubeconfig-mode 644 --disable=traefik" sh /tmp/k3s_install.sh
+
+    - name: Wait for K3s to be ready
+      shell: kubectl get nodes
+      register: k3s_ready
+      retries: 10
+      delay: 15
+      until: "'Ready' in k3s_ready.stdout"
+
+    - name: Fetch K3s token
+      shell: cat /var/lib/rancher/k3s/server/node-token
+      register: master_token
+
+    - name: Save token locally (control PC)
+      copy:
+        content: "{{ master_token.stdout }}"
+        dest: ./k3s_node_token.txt
+      delegate_to: localhost
+
+- name: Install K3s Worker nodes
+  hosts: rpi-worker
+  become: true
+  vars:
+    master_ip: "{{ hostvars['rpi-master1']['ansible_host'] }}"
+  tasks:
+
+    - name: Download K3s install script
+      get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s_install.sh
+        mode: '0755'
+
+    - name: Install K3s agent
+      shell: |
+        K3S_URL=https://{{ master_ip }}:6443 K3S_TOKEN={{ hostvars['rpi-master1']['master_token'].stdout }} sh /tmp/k3s_install.sh
