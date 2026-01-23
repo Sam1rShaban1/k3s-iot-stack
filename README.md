@@ -1,7 +1,3 @@
-Here’s an updated **README.md** that clearly separates the **legacy architecture** (`old.yml`) from the **new architecture** (`main.yml`) and includes your new components (Benthos, Redpanda, VictoriaMetrics):
-
----
-
 # 🛰️ Raspberry Pi IoT Data Pipeline with K3s
 
 This project automates the deployment of a **fault-tolerant IoT data pipeline** on a Raspberry Pi 4B cluster using **Ansible** and **K3s** (lightweight Kubernetes).
