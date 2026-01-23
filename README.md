@@ -60,13 +60,10 @@ IoT Sensors
  EMQX Broker  <─── MetalLB (external LoadBalancer IP)
     │  (JSON messages)
     ▼
- Apache NiFi (ClusterIP)
-    │  (stream processing / transformations)
-    ▼
  Benthos (ClusterIP)
     │  (stream processing & pub/sub)
     ▼
- Redpanda (ClusterIP)
+ NATS JetStreams (ClusterIP)
     │  (event bus / partitioned stream)
     ▼
  VictoriaMetrics (ClusterIP, persistent storage)
@@ -77,7 +74,7 @@ IoT Sensors
 * **EMQX** → external MQTT entry point.
 * **NiFi** → consumes from EMQX, transforms JSON, publishes to Benthos/Redpanda.
 * **Benthos** → lightweight stream processor for filtering, batching, or enriching events.
-* **Redpanda** → Kafka-compatible streaming event bus with lower latency and simpler operations.
+* **NATS JetStreams** → Kafka-compatible streaming event bus with lower latency and simpler operations.
 * **VictoriaMetrics** → scalable time-series database for metrics and IoT data.
 * **Longhorn** → distributed, fault-tolerant storage.
 * **MetalLB** → external IPs for brokers and UIs.
@@ -123,7 +120,7 @@ ansible-playbook -i inventory.ini main.yml
   ```bash
   kubectl port-forward svc/nifi 8080:8080 -n nifi
   ```
-* **Kafka / Redpanda** → Internal (`ClusterIP`), used for streaming events
+* **Kafka / NATS JetStreams** → Internal (`ClusterIP`), used for streaming events
 * **IoTDB / VictoriaMetrics** → Internal (`ClusterIP`)
 
   ```bash
