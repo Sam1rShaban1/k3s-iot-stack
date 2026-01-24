@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: emqx
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/emqx/emqx
+    targetRevision: v5.7.0
+    path: chart/
+    helm:
+      releaseName: emqx
+      valuesFiles:
+        - ../../files/emqx-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: emqx
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - RespectIgnoreDifferences=true

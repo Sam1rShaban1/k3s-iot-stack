@@ -1,9 +1,45 @@
 defaultSettings:
   replica-count: 2
   defaultDataPath: /var/lib/longhorn
+  defaultReplicaCount: 2
+  backupTarget: nfs://192.168.1.100:/backup  # Optional backup target
+  storageMinimalAvailablePercentage: 10
+  storageOverProvisioningPercentage: 200
+  upgradeChecker: false
+  autoSalvage: true
+  autoDeletePodWhenVolumeDetachedUnexpectedly: true
+  disableSchedulingOnCordonedNode: true
+  nodeDownPodDeletionPolicy: delete-both-statefulset-and-deployment-pods
+  allowRecurringJobWhileVolumeDetached: false
+  replicaSoftAntiAffinity: true
+  replicaZoneSoftAntiAffinity: true
+  kubernetesClusterAutoscalerEnabled: false
+  
+persistence:
+  defaultClass: true
+  defaultClassReplicaCount: 2
+  reclaimPolicy: Delete
 
 resources:
   manager:
     requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  driver:
+    requests:
       cpu: 100m
       memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+nodeSelector:
+  kubernetes.io/arch: arm64
+
+tolerations:
+- key: "arm"
+  operator: "Exists"
+  effect: "NoSchedule"

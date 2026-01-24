@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: benthos
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/benthosdev/benthos
+    targetRevision: v4.24.0
+    path: chart/
+    helm:
+      releaseName: benthos
+      valuesFiles:
+        - ../../files/benthos-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: benthos
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - RespectIgnoreDifferences=true

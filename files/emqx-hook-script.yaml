@@ -1,0 +1,38 @@
+# EMQX Hook Script for timestamp injection
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: emqx-hook-script
+  namespace: emqx
+data:
+  message_timestamp.lua: |
+    -- Hook to add timestamps to all messages
+    function hook_message_publish(clientid, username, topic, payload, qos, retain)
+      -- Parse payload if it's JSON
+      local ok, data = pcall(json.decode, payload)
+      if ok and type(data) == "table" then
+        -- Add EMQX timestamps
+        data.emqx_entry_ts = os.time() * 1000  -- Unix timestamp in milliseconds
+        data.emqx_pod = os.getenv("MY_POD_NAME") or "unknown"
+        data.emqx_cluster = "pi-cluster"
+        
+        -- Calculate latency from sensor to EMQX
+        if data.timestamp then
+          data.latency_sensor_to_emqx_ms = data.emqx_entry_ts - data.timestamp
+        end
+        
+        -- Add exit timestamp
+        data.emqx_exit_ts = os.time() * 1000
+        data.emqx_processing_duration_ms = data.emqx_exit_ts - data.emqx_entry_ts
+        
+        -- Encode back to JSON
+        return json.encode(data)
+      end
+      
+      return payload
+    end
+    
+    -- Hook for client connect
+    function hook_client_connect(clientid, username, connack)
+      return connack
+    end

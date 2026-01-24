@@ -1,0 +1,83 @@
+# NATS JetStream consumer for timestamping and VictoriaMetrics ingestion
+replicaCount: 1
+
+# Consumer configuration
+config:
+  # NATS connection
+  nats:
+    url: "nats://nats.nats.svc.cluster.local:4222"
+    stream: "iot-data-stream"
+    consumer: "victoria-metrics-consumer"
+    subject: "iot.data"
+    
+  # Processing pipeline
+  processors:
+    - type: "timestamp"
+      name: "nats_entry_timestamp"
+      
+    - type: "json_transform"
+      name: "add_nats_metadata"
+      config:
+        add_fields:
+          nats_entry_ts: "${timestamp}"
+          nats_pod: "${HOSTNAME}"
+          nats_stream: "iot-data-stream"
+          
+    - type: "timestamp"
+      name: "nats_processing_start"
+      
+    - type: "json_transform"
+      name: "calculate_nats_latency"
+      config:
+        add_fields:
+          latency_benthos_to_nats_ms: "${timestamp} - ${benthos_exit_ts}"
+          latency_sensor_to_nats_ms: "${timestamp} - ${timestamp}"
+          
+    - type: "timestamp"
+      name: "nats_exit_timestamp"
+      
+    - type: "json_transform"
+      name: "add_nats_processing_duration"
+      config:
+        add_fields:
+          nats_processing_duration_ms: "${timestamp} - ${nats_processing_start}"
+          end_to_end_latency_ms: "${timestamp} - ${timestamp}"
+          
+  # VictoriaMetrics output
+  victoria_metrics:
+    url: "http://victoria-metrics-single.victoriametrics.svc.cluster.local:8428/api/v1/write"
+    format: "prometheus"
+    batch_size: 1000
+    flush_interval: "5s"
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+service:
+  type: ClusterIP
+  ports:
+    http: 8080
+
+nodeSelector:
+  kubernetes.io/arch: arm64
+
+tolerations:
+- key: "arm"
+  operator: "Exists"
+  effect: "NoSchedule"
+
+# Environment variables
+env:
+  - name: POD_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
+  - name: POD_NAMESPACE
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.namespace

@@ -1,0 +1,93 @@
+replicaCount: 3
+
+# NATS JetStream configuration
+jetstream:
+  enabled: true
+  fileStore:
+    enabled: true
+    storageClass: longhorn
+    storageSize: 5Gi
+  memoryStore:
+    enabled: true
+    maxSize: 1Gi
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# NATS configuration
+nats:
+  image: nats:2.10.15-alpine
+  port: 4222
+  monitorPort: 8222
+  httpPort: 8222
+  cluster:
+    enabled: true
+    name: nats-cluster
+    replicas: 3
+  
+  # JetStream specific settings
+  jetstream:
+    enabled: true
+    storeDir: /data/jetstream
+    maxMemoryStore: 1Gi
+    maxFileStore: 5Gi
+    
+  # MQTT gateway for IoT compatibility
+  mqtt:
+    enabled: true
+    port: 1883
+    tls:
+      enabled: false
+
+# Service configuration
+service:
+  type: ClusterIP
+  ports:
+    client: 4222
+    cluster: 6222
+    monitor: 8222
+    mqtt: 1883
+
+# Persistence for JetStream
+persistence:
+  enabled: true
+  storageClass: longhorn
+  size: 5Gi
+
+# Pi4 optimizations
+nodeSelector:
+  kubernetes.io/arch: arm64
+
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+    - labelSelector:
+        matchExpressions:
+        - key: app.kubernetes.io/name
+          operator: In
+          values:
+          - nats
+      topologyKey: kubernetes.io/hostname
+
+tolerations:
+- key: "arm"
+  operator: "Exists"
+  effect: "NoSchedule"
+
+# Security context
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# Logging
+config:
+  logtime: true
+  logtime_utc: true
+  debug: false
+  trace: false

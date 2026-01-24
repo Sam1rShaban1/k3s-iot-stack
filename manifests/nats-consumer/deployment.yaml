@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats-consumer
+  namespace: nats-consumer
+  labels:
+    app: nats-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nats-consumer
+  template:
+    metadata:
+      labels:
+        app: nats-consumer
+    spec:
+      containers:
+      - name: nats-consumer
+        image: natsio/nats-cli:latest
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            # Create a simple consumer script
+            cat > /tmp/consumer.py << 'EOF'
+            import asyncio
+            import json
+            import time
+            import requests
+            from nats.aio.client import Client as NATS
+            from datetime import datetime
+            
+            async def run():
+                nc = NATS()
+                await nc.connect("nats://nats.nats.svc.cluster.local:4222")
+                
+                # Create stream if it doesn't exist
+                try:
+                    await nc.add_stream("iot-data-stream", subjects=["iot.data"])
+                except:
+                    pass
+                
+                # Create consumer
+                js = nc.jetstream()
+                await js.add_consumer("iot-data-stream", durable_name="victoria-metrics-consumer")
+                
+                async def message_handler(msg):
+                    try:
+                        # Parse incoming message
+                        data = json.loads(msg.data.decode())
+                        
+                        # Add NATS timestamps
+                        current_time = int(time.time() * 1000)
+                        data['nats_entry_ts'] = current_time
+                        data['nats_pod'] = 'nats-consumer-1'
+                        data['nats_processing_start'] = current_time
+                        
+                        # Calculate latencies
+                        if 'benthos_exit_ts' in data:
+                            data['latency_benthos_to_nats_ms'] = current_time - data['benthos_exit_ts']
+                        
+                        if 'timestamp' in data:
+                            data['latency_sensor_to_nats_ms'] = current_time - data['timestamp']
+                        
+                        data['nats_exit_ts'] = current_time
+                        data['nats_processing_duration_ms'] = 0  # Minimal processing time
+                        
+                        # Calculate end-to-end latency
+                        if 'timestamp' in data:
+                            data['end_to_end_latency_ms'] = current_time - data['timestamp']
+                        
+                        # Convert to VictoriaMetrics format
+                        metrics = []
+                        for key, value in data.items():
+                            if isinstance(value, (int, float)):
+                                metric_name = f"iot_sensor_data_{key}"
+                                labels = f"sensor_id={data.get('sensor_id', 'unknown')}"
+                                metrics.append(f"{metric_name}{{{labels}}} {value}")
+                        
+                        # Send to VictoriaMetrics
+                        if metrics:
+                            vm_data = "\n".join(metrics)
+                            requests.post(
+                                "http://victoria-metrics-single.victoriametrics.svc.cluster.local:8428/api/v1/write",
+                                data=vm_data,
+                                headers={'Content-Type': 'text/plain'}
+                            )
+                        
+                        await msg.ack()
+                        
+                    except Exception as e:
+                        print(f"Error processing message: {e}")
+                        await msg.nak()
+                
+                # Subscribe to messages
+                await js.subscribe("iot.data", "victoria-metrics-consumer", message_handler)
+                
+                print("NATS Consumer started. Waiting for messages...")
+                while True:
+                    await asyncio.sleep(1)
+            
+            asyncio.run(run())
+            EOF
+            
+            python3 /tmp/consumer.py
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      tolerations:
+      - key: "arm"
+        operator: "Exists"
+        effect: "NoSchedule"

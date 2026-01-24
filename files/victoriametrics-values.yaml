@@ -1,17 +1,17 @@
-replicaCount: 4
+replicaCount: 1
 
 resources:
   requests:
     cpu: 500m
     memory: 1Gi
   limits:
-    cpu: 1.5
+    cpu: 1000m
     memory: 2Gi
 
 persistence:
   enabled: true
-  storageClass: longhorn-custom
-  size: 20Gi
+  storageClass: longhorn
+  size: 15Gi
 
 service:
   type: ClusterIP
@@ -19,31 +19,38 @@ service:
     http: 8428
     grpc: 8429
 
-# Cluster mode components
-vmstorage:
-  replicaCount: 4
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-    limits:
-      cpu: 1.5
-      memory: 2Gi
-vminsert:
-  replicaCount: 2
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      cpu: 750m
-      memory: 1Gi
-vmselect:
-  replicaCount: 2
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      cpu: 750m
-      memory: 1Gi
+# Single-node mode optimized for Pi4
+extraArgs:
+  - --retentionPeriod=30d
+  - --memory.allowedPercent=40
+  - --storageDataPath=/data
+  - --httpListenAddr=:8428
+  - --loggerLevel=info
+  - --loggerTimezone=UTC
+  - --search.maxQueryDuration=30s
+  - --search.maxUniqueTimeseries=1000000
+  - --search.maxSeriesPerQuery=100000
+  - --search.maxQueryLen=16000
+  - --search.maxConcurrentRequests=100
+  - --search.maxPointsPerTimeseries=30000
+
+nodeSelector:
+  kubernetes.io/arch: arm64
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - victoria-metrics-single
+        topologyKey: kubernetes.io/hostname
+
+tolerations:
+- key: "arm"
+  operator: "Exists"
+  effect: "NoSchedule"

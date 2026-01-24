@@ -1,16 +1,74 @@
 replicaCount: 2
+
 service:
   type: LoadBalancer
-  port: 1883
+  loadBalancerIP: 192.168.1.241
+  ports:
+    mqtt: 1883
+    mqtts: 8883
+    ws: 8083
+    wss: 8084
+    dashboard: 18083
 
 resources:
   requests:
-    cpu: 200m
-    memory: 256Mi
-  limits:
     cpu: 500m
-    memory: 768Mi
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
 
 persistence:
   enabled: true
-  storageClass: longhorn-custom
+  size: 2Gi
+  storageClass: longhorn
+
+env:
+  EMQX_DASHBOARD__DEFAULT_USERNAME: admin
+  EMQX_DASHBOARD__DEFAULT_PASSWORD: emqxadmin123
+  EMQX_LOG__LEVEL: info
+  EMQX_LISTENERS__TCP__DEFAULT__BIND: "0.0.0.0:1883"
+  EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
+  EMQX_LISTENERS__WS__DEFAULT__BIND: "0.0.0.0:8083"
+  EMQX_LISTENERS__WSS__DEFAULT__BIND: "0.0.0.0:8084"
+  MY_POD_NAME: "emqx-0"
+
+# Add custom config for hooks
+extraConfigFiles:
+  hooks.conf: |
+    ## Enable hooks for message processing
+    hooks {
+      client.connect.after = ["emqx_hook_message_timestamp"]
+      message.publish.after = ["emqx_hook_message_timestamp"]
+    }
+
+# Mount hook script
+volumes:
+- name: hook-scripts
+  configMap:
+    name: emqx-hook-script
+
+volumeMounts:
+- name: hook-scripts
+  mountPath: /opt/emqx/data/hooks
+
+nodeSelector:
+  kubernetes.io/arch: arm64
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - emqx
+        topologyKey: kubernetes.io/hostname
+
+tolerations:
+- key: "arm"
+  operator: "Exists"
+  effect: "NoSchedule"

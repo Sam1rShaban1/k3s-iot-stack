@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redpanda
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/redpanda-data/helm-charts
+    targetRevision: v23.2.15
+    path: charts/redpanda
+    helm:
+      releaseName: redpanda
+      valuesFiles:
+        - ../../files/redpanda-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: redpanda
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - RespectIgnoreDifferences=true

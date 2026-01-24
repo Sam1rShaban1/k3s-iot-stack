@@ -1,28 +1,98 @@
-replicaCount: 4
+replicaCount: 2
 
 service:
   type: ClusterIP
-  port: 4195   # Benthos HTTP API
-  grpcPort: 4196
+  ports:
+    http: 4195   # Benthos HTTP API
+    grpc: 4196
 
 resources:
   requests:
     cpu: 250m
-    memory: 512Mi
+    memory: 256Mi
   limits:
-    cpu: 750m
-    memory: 1Gi
+    cpu: 500m
+    memory: 512Mi
 
 persistence:
   enabled: false   # messages handled in memory
 
-# configure input/output channels (MQTT -> Redpanda)
-input:
-  mqtt:
-    url: "tcp://emqx.metallb:1883"
-    qos: 2
-output:
-  kafka:
-    brokers:
-      - "redpanda.redpanda:9092"
-    topic: "iot-data"
+# Benthos configuration for IoT data pipeline
+config: |
+  input:
+    mqtt:
+      urls: ["tcp://emqx.emqx.svc.cluster.local:1883"]
+      topics: ["iot/sensors/+"]
+      qos: 2
+      client_id: "benthos-${HOSTNAME}"
+      clean_session: true
+      
+  pipeline:
+    processors:
+      - bloblang: |
+          # Add Benthos entry timestamp
+          root.benthos_entry_ts = now()
+          root.benthos_pod = "${HOSTNAME}"
+          
+      - json_schema:
+          schema: |
+            {
+              "type": "object",
+              "properties": {
+                "sensor_id": {"type": "string"},
+                "timestamp": {"type": "integer"},
+                "value": {"type": "number"},
+                "unit": {"type": "string"}
+              },
+              "required": ["sensor_id", "timestamp", "value"]
+            }
+            
+      - bloblang: |
+          # Add processing metadata
+          root.processed_at = now()
+          root.cluster = "pi-cluster"
+          root.benthos_processing_start = now()
+          
+      - bloblang: |
+          # Calculate latency from sensor to Benthos
+          sensor_ts = root.timestamp
+          current_ts = now()
+          root.latency_sensor_to_benthos_ms = current_ts - sensor_ts
+          
+      - bloblang: |
+          # Add Benthos exit timestamp
+          root.benthos_exit_ts = now()
+          root.benthos_processing_duration_ms = root.benthos_exit_ts - root.benthos_processing_start
+          
+  output:
+    nats_jetstream:
+      urls: ["nats://nats.nats.svc.cluster.local:4222"]
+      subject: "iot.data"
+      stream: "iot-data-stream"
+      jetstream:
+        ack_wait: "30s"
+        max_retries: 3
+      batching:
+        count: 100
+        period: 5s
+
+nodeSelector:
+  kubernetes.io/arch: arm64
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - benthos
+        topologyKey: kubernetes.io/hostname
+
+tolerations:
+- key: "arm"
+  operator: "Exists"
+  effect: "NoSchedule"

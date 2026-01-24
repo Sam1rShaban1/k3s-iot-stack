@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nats-consumer
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_USERNAME/k3s-iot-stack
+    targetRevision: main
+    path: manifests/nats-consumer
+    helm:
+      releaseName: nats-consumer
+      valuesFiles:
+        - ../../files/nats-consumer-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nats-consumer
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - RespectIgnoreDifferences=true

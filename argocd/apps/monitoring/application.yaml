@@ -1,0 +1,139 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/prometheus-community/helm-charts
+    targetRevision: kube-prometheus-stack-55.9.0
+    path: charts/kube-prometheus-stack
+    helm:
+      releaseName: monitoring
+      values:
+        prometheus:
+          prometheusSpec:
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  storageClassName: longhorn
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 10Gi
+            # Additional scrape configs for IoT services
+            additionalScrapeConfigs:
+              - job_name: 'emqx'
+                static_configs:
+                  - targets: ['emqx.emqx.svc.cluster.local:18083']
+                metrics_path: '/api/v5/prometheus/stats'
+                scrape_interval: 15s
+              - job_name: 'nats'
+                static_configs:
+                  - targets: ['nats.nats.svc.cluster.local:8222']
+                metrics_path: '/varz'
+                scrape_interval: 15s
+              - job_name: 'victoriametrics'
+                static_configs:
+                  - targets: ['victoria-metrics-single.victoriametrics.svc.cluster.local:8428']
+                metrics_path: '/metrics'
+                scrape_interval: 15s
+                
+        grafana:
+          persistence:
+            enabled: true
+            storageClassName: longhorn
+            size: 5Gi
+          service:
+            type: LoadBalancer
+            loadBalancerIP: 192.168.1.242
+          # Pre-configured dashboards
+          dashboardProviders:
+            dashboardproviders.yaml:
+              apiVersion: 1
+              providers:
+                - name: 'default'
+                  orgId: 1
+                  folder: ''
+                  type: file
+                  disableDeletion: false
+                  editable: true
+                  options:
+                    path: /var/lib/grafana/dashboards/default
+          # Import dashboards from ConfigMaps
+          dashboards:
+            default:
+              k3s-cluster:
+                gnetId: 15757
+                revision: 15
+                datasource: Prometheus
+              emqx-monitoring:
+                gnetId: 14164
+                revision: 1
+                datasource: Prometheus
+              nats-monitoring:
+                gnetId: 14519
+                revision: 1
+                datasource: Prometheus
+              victoriametrics:
+                gnetId: 10229
+                revision: 1
+                datasource: Prometheus
+              pi-cluster-overview:
+                url: https://raw.githubusercontent.com/YOUR_USERNAME/k3s-iot-stack/main/dashboards/pi-cluster-overview.json
+              iot-latency-analysis:
+                url: https://raw.githubusercontent.com/YOUR_USERNAME/k3s-iot-stack/main/dashboards/iot-latency-analysis.json
+                
+        # Node Exporter for Pi hardware metrics
+        prometheus-node-exporter:
+          hostRootFsMount: false
+          hostNetwork: true
+          hostPID: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          # Pi-specific metrics
+          extraArgs:
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
+            - --collector.cpu.info
+            - --collector.meminfo
+            - --collector.stat
+            - --collector.thermal-zone
+            - --collector.hwmon
+            
+        # Kube State Metrics for Kubernetes resources
+        kube-state-metrics:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+              
+        # Additional monitoring for ARM64
+        prometheusOperator:
+          admissionWebhooks:
+            patch:
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 100m
+                  memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - RespectIgnoreDifferences=true
