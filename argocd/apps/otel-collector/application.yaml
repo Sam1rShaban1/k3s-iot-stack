@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: otel-collector
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/open-telemetry/opentelemetry-helm-charts
+    targetRevision: opentelemetry-collector-0.69.0
+    path: charts/opentelemetry-collector
+    helm:
+      releaseName: otel-collector
+      valuesFiles:
+        - ../../files/otel-collector-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    - RespectIgnoreDifferences=true

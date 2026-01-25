@@ -39,6 +39,16 @@ spec:
                   - targets: ['victoria-metrics-single.victoriametrics.svc.cluster.local:8428']
                 metrics_path: '/metrics'
                 scrape_interval: 15s
+              - job_name: 'loki'
+                static_configs:
+                  - targets: ['loki.logging.svc.cluster.local:3100']
+                metrics_path: '/metrics'
+                scrape_interval: 30s
+              - job_name: 'tempo'
+                static_configs:
+                  - targets: ['tempo.logging.svc.cluster.local:3100']
+                metrics_path: '/metrics'
+                scrape_interval: 30s
                 
         grafana:
           persistence:
@@ -80,11 +90,37 @@ spec:
                 gnetId: 10229
                 revision: 1
                 datasource: Prometheus
+              loki-logs:
+                gnetId: 13639
+                revision: 2
+                datasource: Loki
+              tempo-traces:
+                gnetId: 10878
+                revision: 1
+                datasource: Tempo
               pi-cluster-overview:
                 url: https://raw.githubusercontent.com/YOUR_USERNAME/k3s-iot-stack/main/dashboards/pi-cluster-overview.json
               iot-latency-analysis:
                 url: https://raw.githubusercontent.com/YOUR_USERNAME/k3s-iot-stack/main/dashboards/iot-latency-analysis.json
-                
+          # Configure data sources
+          datasources:
+            datasources.yaml:
+              apiVersion: 1
+              datasources:
+                - name: Prometheus
+                  type: prometheus
+                  access: proxy
+                  url: http://monitoring-prometheus.monitoring.svc.cluster.local:9090
+                  isDefault: true
+                - name: Loki
+                  type: loki
+                  access: proxy
+                  url: http://loki.logging.svc.cluster.local:3100
+                - name: Tempo
+                  type: tempo
+                  access: proxy
+                  url: http://tempo.logging.svc.cluster.local:3100
+                  
         # Node Exporter for Pi hardware metrics
         prometheus-node-exporter:
           hostRootFsMount: false

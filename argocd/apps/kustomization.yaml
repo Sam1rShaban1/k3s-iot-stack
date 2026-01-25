@@ -10,5 +10,9 @@ resources:
   - nats-consumer
   - victoriametrics
   - monitoring
+  - loki
+  - promtail
+  - tempo
+  - otel-collector
 
 namespace: argocd
