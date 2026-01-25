@@ -1,0 +1,62 @@
+---
+- name: Install ArgoCD for GitOps
+  hosts: rpi-master
+  become: true
+  tasks:
+
+    - name: Wait for K3s to be ready
+      shell: kubectl get nodes
+      register: k3s_ready
+      retries: 10
+      delay: 15
+      until: "'Ready' in k3s_ready.stdout"
+
+    - name: Create argocd namespace
+      shell: kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Apply ArgoCD installation
+      shell: |
+        kubectl apply -k https://github.com/argoproj/argo-helm/manifests/argo-cd?ref=argo-cd-5.53.0
+
+    - name: Wait for ArgoCD to be ready
+      shell: |
+        kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=300s
+
+    - name: Apply root application to bootstrap all services
+      shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: argoproj.io/v1alpha1
+        kind: Application
+        metadata:
+          name: root
+          namespace: argocd
+        spec:
+          project: default
+          source:
+            repoURL: https://github.com/YOUR_USERNAME/k3s-iot-stack
+            targetRevision: main
+            path: argocd/apps
+          destination:
+            server: https://kubernetes.default.svc
+            namespace: argocd
+          syncPolicy:
+            automated:
+              prune: true
+              selfHeal: true
+            syncOptions:
+            - CreateNamespace=true
+            - RespectIgnoreDifferences=true
+        EOF
+
+    - name: Display ArgoCD access information
+      debug:
+        msg: |
+          🎉 ArgoCD GitOps setup complete!
+          
+          Access ArgoCD UI:
+          kubectl port-forward svc/argocd-server -n argocd 8080:80
+          Then open: http://localhost:8080
+          
+          Default credentials: admin/$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath="{.data.password}" | base64 -d)
+          
+          All applications will be automatically deployed via GitOps!
