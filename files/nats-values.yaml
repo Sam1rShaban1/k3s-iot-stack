@@ -6,18 +6,18 @@ jetstream:
   fileStore:
     enabled: true
     storageClass: longhorn
-    storageSize: 5Gi
+    storageSize: 8Gi
   memoryStore:
     enabled: true
-    maxSize: 1Gi
+    maxSize: 2Gi
 
 resources:
   requests:
-    cpu: 200m
-    memory: 256Mi
+    cpu: 300m
+    memory: 384Mi
   limits:
-    cpu: 500m
-    memory: 512Mi
+    cpu: 600m
+    memory: 768Mi
 
 # NATS configuration
 nats:
@@ -29,13 +29,24 @@ nats:
     enabled: true
     name: nats-cluster
     replicas: 3
+    # Cluster optimizations for gigabit network
+    noAdvertise: false
+    routes:
+      - nats://nats-0.nats-headless.nats.svc.cluster.local:6222
+      - nats://nats-1.nats-headless.nats.svc.cluster.local:6222
+      - nats://nats-2.nats-headless.nats.svc.cluster.local:6222
   
   # JetStream specific settings
   jetstream:
     enabled: true
     storeDir: /data/jetstream
-    maxMemoryStore: 1Gi
-    maxFileStore: 5Gi
+    maxMemoryStore: 2Gi
+    maxFileStore: 8Gi
+    # Performance optimizations
+    maxOutstandingAcks: 1000
+    maxAckPending: 10000
+    maxBytes: 1GB
+    maxAge: "24h"
     
   # MQTT gateway for IoT compatibility
   mqtt:
@@ -43,6 +54,8 @@ nats:
     port: 1883
     tls:
       enabled: false
+    ack_wait: 30s
+    max_qos: 2
 
 # Service configuration
 service:
@@ -57,7 +70,7 @@ service:
 persistence:
   enabled: true
   storageClass: longhorn
-  size: 5Gi
+  size: 8Gi
 
 # Pi4 optimizations
 nodeSelector:
@@ -85,9 +98,39 @@ securityContext:
   runAsGroup: 1000
   fsGroup: 1000
 
-# Logging
+# Performance configuration
 config:
   logtime: true
   logtime_utc: true
   debug: false
   trace: false
+  # Network optimizations
+  max_connections: 65536
+  max_payload: 1048576  # 1MB
+  max_control_line: 524288
+  ping_interval: "2m"
+  ping_max: 2
+  write_deadline: "2s"
+  # JetStream performance
+  jetstream:
+    max_file_size: 104857600  # 100MB
+    sync_interval: "30s"
+    compact_interval: "5m"
+
+# Priority class for critical messaging service
+priorityClassName: system-cluster-critical
+
+# Health checks
+livenessProbe:
+  httpGet:
+    path: /varz
+    port: 8222
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /varz
+    port: 8222
+  initialDelaySeconds: 10
+  periodSeconds: 5

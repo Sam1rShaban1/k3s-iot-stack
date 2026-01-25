@@ -14,6 +14,14 @@ defaultSettings:
   replicaSoftAntiAffinity: true
   replicaZoneSoftAntiAffinity: true
   kubernetesClusterAutoscalerEnabled: false
+  # Pi4 8GB optimizations
+  concurrentReplicaRebuildLimit: 3
+  replicaReplenishmentWaitInterval: 500
+  disableRevisionCounter: true
+  priorityClass: system-cluster-critical
+  # Performance tuning for gigabit network
+  taintToleration: true
+  defaultDataLocality: best-effort
   
 persistence:
   defaultClass: true
@@ -23,12 +31,19 @@ persistence:
 resources:
   manager:
     requests:
-      cpu: 200m
-      memory: 256Mi
+      cpu: 300m
+      memory: 384Mi
     limits:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 800m
+      memory: 768Mi
   driver:
+    requests:
+      cpu: 150m
+      memory: 192Mi
+    limits:
+      cpu: 300m
+      memory: 384Mi
+  ui:
     requests:
       cpu: 100m
       memory: 128Mi
@@ -43,3 +58,19 @@ tolerations:
 - key: "arm"
   operator: "Exists"
   effect: "NoSchedule"
+- key: "CriticalAddonsOnly"
+  operator: "Exists"
+  effect: "NoSchedule"
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - longhorn-manager
+        topologyKey: kubernetes.io/hostname

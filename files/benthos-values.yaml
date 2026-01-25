@@ -1,4 +1,4 @@
-replicaCount: 2
+replicaCount: 3
 
 service:
   type: ClusterIP
@@ -8,11 +8,11 @@ service:
 
 resources:
   requests:
-    cpu: 250m
-    memory: 256Mi
+    cpu: 400m
+    memory: 384Mi
   limits:
-    cpu: 500m
-    memory: 512Mi
+    cpu: 800m
+    memory: 768Mi
 
 persistence:
   enabled: false   # messages handled in memory
@@ -26,8 +26,15 @@ config: |
       qos: 2
       client_id: "benthos-${HOSTNAME}"
       clean_session: true
+      # Performance optimizations
+      max_in_flight: 100
+      backoff:
+        max_elapsed_time: 30s
+        max_interval: 5s
       
   pipeline:
+    # Thread pool for parallel processing
+    threads: 4
     processors:
       - bloblang: |
           # Add Benthos entry timestamp
@@ -72,16 +79,22 @@ config: |
       jetstream:
         ack_wait: "30s"
         max_retries: 3
+      # Performance batching for high throughput
       batching:
-        count: 100
-        period: 5s
+        count: 500
+        period: 2s
+        processors:
+          - archive:
+              format: json_array
+      # Connection pooling
+      max_in_flight: 50
 
 nodeSelector:
   kubernetes.io/arch: arm64
 
 affinity:
   podAntiAffinity:
-    preferredDuringSchedulingIgnoredDuringExecution:
+    requiredDuringSchedulingIgnoredDuringExecution:
     - weight: 100
       podAffinityTerm:
         labelSelector:
@@ -96,3 +109,21 @@ tolerations:
 - key: "arm"
   operator: "Exists"
   effect: "NoSchedule"
+
+# Priority class for processing service
+priorityClassName: system-node-critical
+
+# Performance tuning
+livenessProbe:
+  httpGet:
+    path: /ready
+    port: 4195
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 4195
+  initialDelaySeconds: 10
+  periodSeconds: 5

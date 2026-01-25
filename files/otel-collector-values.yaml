@@ -1,0 +1,123 @@
+# OpenTelemetry Collector for distributed tracing
+replicaCount: 1
+
+mode: deployment
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+    prometheus:
+      config:
+        scrape_configs:
+          - job_name: 'iot-services'
+            static_configs:
+              - targets: ['emqx.emqx.svc.cluster.local:18083']
+                metrics_path: '/api/v5/prometheus/stats'
+              - targets: ['nats.nats.svc.cluster.local:8222']
+                metrics_path: '/varz'
+              - targets: ['victoria-metrics-single.victoriametrics.svc.cluster.local:8428']
+                metrics_path: '/metrics'
+    jaeger:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:14250
+        thrift_http:
+          endpoint: 0.0.0.0:14268
+    zipkin:
+      endpoint: 0.0.0.0:9411
+      
+  processors:
+    batch:
+      timeout: 1s
+      send_batch_size: 1024
+    memory_limiter:
+      limit_mib: 512
+    resource:
+      attributes:
+        - key: environment
+          value: production
+        - key: cluster
+          value: pi-cluster
+    transform:
+      trace_statements:
+        - context: span
+          statements:
+            - set(attributes["service.name"], resource.attributes["service.name"])
+            - set(attributes["service.version"], resource.attributes["service.version"])
+            
+  exporters:
+    prometheus:
+      endpoint: "0.0.0.0:8889"
+      namespace: "otelcol"
+    loki:
+      endpoint: "http://loki.logging.svc.cluster.local:3100/loki/api/v1/push"
+      labels:
+        job: "otel-collector"
+        cluster: "pi-cluster"
+    otlp:
+      endpoint: "tempo.logging.svc.cluster.local:4317"
+      tls:
+        insecure: true
+    logging:
+      loglevel: info
+      
+  service:
+    pipelines:
+      traces:
+        receivers: [otlp, jaeger, zipkin]
+        processors: [memory_limiter, batch, transform]
+        exporters: [otlp, logging]
+      metrics:
+        receivers: [otlp, prometheus]
+        processors: [memory_limiter, batch, transform]
+        exporters: [prometheus, logging]
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, batch, transform]
+        exporters: [loki, logging]
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 400m
+    memory: 512Mi
+
+service:
+  type: ClusterIP
+  ports:
+    otlp-grpc:
+      port: 4317
+      protocol: TCP
+    otlp-http:
+      port: 4318
+      protocol: TCP
+    jaeger-grpc:
+      port: 14250
+      protocol: TCP
+    jaeger-http:
+      port: 14268
+      protocol: TCP
+    zipkin:
+      port: 9411
+      protocol: TCP
+    prometheus:
+      port: 8889
+      protocol: TCP
+
+nodeSelector:
+  kubernetes.io/arch: arm64
+
+tolerations:
+- key: "arm"
+  operator: "Exists"
+  effect: "NoSchedule"
+
+# Priority class for observability service
+priorityClassName: system-cluster-critical

@@ -9,32 +9,70 @@ service:
     ws: 8083
     wss: 8084
     dashboard: 18083
+  # Internal ClusterIP for pod-to-pod communication
+  internal:
+    type: ClusterIP
+    ports:
+      mqtt: 1883
+      http: 8081
+      management: 8083
 
 resources:
   requests:
-    cpu: 500m
-    memory: 512Mi
+    cpu: 750m
+    memory: 768Mi
   limits:
-    cpu: 1000m
-    memory: 1Gi
+    cpu: 1500m
+    memory: 2Gi
 
 persistence:
   enabled: true
-  size: 2Gi
+  size: 3Gi
   storageClass: longhorn
 
 env:
   EMQX_DASHBOARD__DEFAULT_USERNAME: admin
   EMQX_DASHBOARD__DEFAULT_PASSWORD: emqxadmin123
-  EMQX_LOG__LEVEL: info
+  EMQX_LOG__LEVEL: warn
   EMQX_LISTENERS__TCP__DEFAULT__BIND: "0.0.0.0:1883"
+  EMQX_LISTENERS__TCP__DEFAULT__MAX_CONNECTIONS: "100000"
+  EMQX_LISTENERS__TCP__DEFAULT__MAX_CONN_RATE: "1000"
   EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
   EMQX_LISTENERS__WS__DEFAULT__BIND: "0.0.0.0:8083"
   EMQX_LISTENERS__WSS__DEFAULT__BIND: "0.0.0.0:8084"
   MY_POD_NAME: "emqx-0"
+  # Performance tuning for Pi4 8GB
+  EMQX_ZONE__FORCE_GC__ENABLED: "true"
+  EMQX_ZONE__FORCE_GC__COUNT: "2"
+  EMQX_MQTT__MAX_TOPIC_LEVELS: "128"
+  EMQX_MQTT__MAX_PACKET_SIZE: "1MB"
+  EMQX_MQTT__MAX_CLIENTID_LEN: "65535"
+  EMQX_MQTT__MAX_INFLIGHT: "1024"
+  EMQX_MQTT__RETRY_INTERVAL: "5s"
+  EMQX_MQTT__MAX_QUEUED: "1000"
+  # Cluster optimizations for gigabit network
+  EMQX_CLUSTER__PROTO_DIST: "inet_tcp"
+  EMQX_CLUSTER__STATIC__SEEDS: "emqx@emqx-0.emqx-headless.emqx.svc.cluster.local,emqx@emqx-1.emqx-headless.emqx.svc.cluster.local"
+  EMQX_CLUSTER__HEARTBEAT_INTERVAL: "2s"
+  EMQX_CLUSTER__HEARTBEAT_TIMEOUT: "10s"
 
 # Add custom config for hooks
 extraConfigFiles:
+  emqx.conf: |
+    ## Performance optimizations for Pi4
+    node.process_limit = 2097152
+    node.max_ports = 65536
+    kernel.dist = true
+    kernel.inet_dist_listen_min = 6000
+    kernel.inet_dist_listen_max = 6999
+    
+    ## MQTT optimizations
+    mqtt.idle_timeout = 30s
+    mqtt.keepalive_multiplier = 1.5
+    mqtt.max_subscriptions = 1024
+    mqtt.max_awaiting_rel = 100
+    mqtt.max_mqueue_len = 1000
+    
   hooks.conf: |
     ## Enable hooks for message processing
     hooks {
@@ -57,7 +95,7 @@ nodeSelector:
 
 affinity:
   podAntiAffinity:
-    preferredDuringSchedulingIgnoredDuringExecution:
+    requiredDuringSchedulingIgnoredDuringExecution:
     - weight: 100
       podAffinityTerm:
         labelSelector:
@@ -72,3 +110,6 @@ tolerations:
 - key: "arm"
   operator: "Exists"
   effect: "NoSchedule"
+
+# Priority class for critical service
+priorityClassName: system-cluster-critical
