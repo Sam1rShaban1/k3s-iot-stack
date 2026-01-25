@@ -99,9 +99,21 @@ spec:
                 revision: 1
                 datasource: Tempo
               pi-cluster-overview:
-                url: https://raw.githubusercontent.com/YOUR_USERNAME/k3s-iot-stack/main/dashboards/pi-cluster-overview.json
+                url: https://raw.githubusercontent.com/Sam1rShaban1/k3s-iot-stack/main/dashboards/pi-cluster-overview.json
               iot-latency-analysis:
-                url: https://raw.githubusercontent.com/YOUR_USERNAME/k3s-iot-stack/main/dashboards/iot-latency-analysis.json
+                url: https://raw.githubusercontent.com/Sam1rShaban1/k3s-iot-stack/main/dashboards/iot-latency-analysis.json
+              k3s-cluster-overview:
+                url: https://raw.githubusercontent.com/Sam1rShaban1/k3s-iot-stack/main/dashboards/k3s-cluster-overview.json
+              iot-pipeline-comprehensive:
+                url: https://raw.githubusercontent.com/Sam1rShaban1/k3s-iot-stack/main/dashboards/iot-pipeline-comprehensive.json
+              logs-analysis:
+                url: https://raw.githubusercontent.com/Sam1rShaban1/k3s-iot-stack/main/dashboards/logs-analysis.json
+              traces-analysis:
+                url: https://raw.githubusercontent.com/Sam1rShaban1/k3s-iot-stack/main/dashboards/traces-analysis.json
+              pod-resource-analysis:
+                url: https://raw.githubusercontent.com/Sam1rShaban1/k3s-iot-stack/main/dashboards/pod-resource-analysis.json
+              storage-health:
+                url: https://raw.githubusercontent.com/Sam1rShaban1/k3s-iot-stack/main/dashboards/storage-health.json
           # Configure data sources
           datasources:
             datasources.yaml:
