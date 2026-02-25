@@ -31,11 +31,18 @@
         dest: ./k3s_node_token.txt
       delegate_to: localhost
 
+    - name: Save token to shared location for worker nodes
+      copy:
+        content: "{{ master_token.stdout }}"
+        dest: /tmp/k3s_node_token.txt
+      mode: '0644'
+
 - name: Install K3s Worker nodes
   hosts: rpi-worker
   become: true
   vars:
     master_ip: "{{ hostvars['rpi-master1']['ansible_host'] }}"
+    master_token_file: "/tmp/k3s_node_token.txt"
   tasks:
 
     - name: Download K3s install script
@@ -44,6 +51,11 @@
         dest: /tmp/k3s_install.sh
         mode: '0755'
 
+    - name: Read K3s token from master
+      slurp:
+        src: /tmp/k3s_node_token.txt
+      register: token_content
+
     - name: Install K3s agent
       shell: |
-        K3S_URL=https://{{ master_ip }}:6443 K3S_TOKEN={{ hostvars['rpi-master1']['master_token'].stdout }} sh /tmp/k3s_install.sh
+        K3S_URL=https://{{ master_ip }}:6443 K3S_TOKEN="{{ token_content.content | b64decode | trim }}" sh /tmp/k3s_install.sh

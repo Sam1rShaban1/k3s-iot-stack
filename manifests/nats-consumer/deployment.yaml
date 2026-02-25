@@ -17,11 +17,12 @@ spec:
     spec:
       containers:
       - name: nats-consumer
-        image: natsio/nats-cli:latest
+        image: python:3.11-slim
         command: ["/bin/sh"]
         args:
           - -c
           - |
+            pip install requests nats-py --quiet
             # Create a simple consumer script
             cat > /tmp/consumer.py << 'EOF'
             import asyncio

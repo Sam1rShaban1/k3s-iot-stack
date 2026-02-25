@@ -14,7 +14,7 @@ parameters:
   dataLocality: "best-effort"
   fromBackup: ""
   fsType: "ext4"
-  mkfsOptions: "-E nodiscard"
+  mkfsOptions: "-E nodiscard,lazy_itable_init=1,lazy_journal_init=1"
   migratable: "true"
   # Pi4 8GB optimizations
   disableRevisionCounter: "true"
@@ -24,5 +24,3 @@ parameters:
   dataEngine: "v1"
   # Network optimizations
   backendStoreDriver: "v1"
-  # Filesystem optimizations for Pi4
-  mkfsOptions: "-E nodiscard,lazy_itable_init=1,lazy_journal_init=1"

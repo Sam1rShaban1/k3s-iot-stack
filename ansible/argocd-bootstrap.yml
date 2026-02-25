@@ -33,7 +33,7 @@
         spec:
           project: default
           source:
-            repoURL: https://github.com/YOUR_USERNAME/k3s-iot-stack
+            repoURL: https://github.com/Sam1rShaban1/k3s-iot-stack
             targetRevision: main
             path: argocd/apps
           destination:

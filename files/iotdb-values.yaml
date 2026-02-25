@@ -12,7 +12,7 @@ resources:
 
 persistence:
   enabled: true
-  storageClass: longhorn-custom
+  storageClass: longhorn
 
 
 JVM_HEAP_OPTS: "-Xms512m -Xmx768m"
