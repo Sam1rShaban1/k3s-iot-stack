@@ -3,8 +3,6 @@ kind: Kustomization
 
 resources:
   - ../../manifests/namespaces
-  - ../../manifests/namespaces/pod-disruption-budgets.yaml
-  - ../../manifests/namespaces/network-policies.yaml
   - metallb
   - longhorn
   - emqx
