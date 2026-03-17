@@ -3,15 +3,6 @@ kind: Kustomization
 
 resources:
   - ../../manifests/namespaces
-  - metallb/application.yaml
   - longhorn/application.yaml
-  - emqx/application.yaml
   - benthos/application.yaml
-  - nats/application.yaml
   - nats-consumer/application.yaml
-  - victoriametrics/application.yaml
-  - monitoring/application.yaml
-  - loki/application.yaml
-  - promtail/application.yaml
-  - tempo/application.yaml
-  - otel-collector/application.yaml
