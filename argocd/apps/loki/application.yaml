@@ -18,6 +18,21 @@ spec:
             replication_factor: 1
           storage:
             type: filesystem
+        deploymentMode: SingleBinary
+        persistence:
+          enabled: true
+          storageClass: longhorn
+          size: 10Gi
+        nodeSelector:
+          kubernetes.io/arch: arm64
+        tolerations:
+        - key: "arm"
+          operator: "Exists"
+          effect: "NoSchedule"
+          commonConfig:
+            replication_factor: 1
+          storage:
+            type: filesystem
             filesystem:
               chunks_directory: /loki/chunks
               rules_directory: /loki/rules

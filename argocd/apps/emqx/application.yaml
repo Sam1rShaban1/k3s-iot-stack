@@ -6,8 +6,8 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://www.emqx.io/downloads/emqx
-    targetRevision: v5.8.0
+    repoURL: https://emqx.github.io/emqx-helm-charts
+    targetRevision: 5.8.0
     chart: emqx
     helm:
       releaseName: emqx

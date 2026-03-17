@@ -11,8 +11,21 @@ spec:
     chart: opentelemetry-collector
     helm:
       releaseName: otel-collector
-      valuesFiles:
-        - ../../files/otel-collector-values.yaml
+      values: |
+        mode: deployment
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        nodeSelector:
+          kubernetes.io/arch: arm64
+        tolerations:
+        - key: "arm"
+          operator: "Exists"
+          effect: "NoSchedule"
   destination:
     server: https://kubernetes.default.svc
     namespace: logging

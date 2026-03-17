@@ -7,7 +7,7 @@ spec:
   project: default
   source:
     repoURL: https://benthosdev.github.io/charts
-    targetRevision: 4.24.0
+    targetRevision: 0.6.0
     chart: benthos
     helm:
       releaseName: benthos

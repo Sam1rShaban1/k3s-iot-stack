@@ -9,10 +9,6 @@ spec:
     repoURL: https://github.com/Sam1rShaban1/k3s-iot-stack
     targetRevision: main
     path: manifests/nats-consumer
-    helm:
-      releaseName: nats-consumer
-      valuesFiles:
-        - ../../files/nats-consumer-values.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: nats-consumer
