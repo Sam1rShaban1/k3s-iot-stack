@@ -6,9 +6,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/nats-io/nats-server
-    targetRevision: v0.19.0
-    path: helm/charts/nats
+    repoURL: https://nats-io.github.io/k8s/helm/charts
+    targetRevision: nats-0.24.0
+    chart: nats
     helm:
       releaseName: nats
       valuesFiles:

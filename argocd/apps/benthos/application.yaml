@@ -6,9 +6,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/benthosdev/benthos
-    targetRevision: v4.24.0
-    path: chart/
+    repoURL: https://benthosdev.github.io/charts
+    targetRevision: 4.24.0
+    chart: benthos
     helm:
       releaseName: benthos
       valuesFiles:

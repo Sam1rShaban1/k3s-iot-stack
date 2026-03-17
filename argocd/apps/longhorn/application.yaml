@@ -6,9 +6,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/longhorn/longhorn
-    targetRevision: v1.6.0
-    path: chart/
+    repoURL: https://charts.longhorn.io
+    targetRevision: 1.6.0
+    chart: longhorn
     helm:
       releaseName: longhorn
       valuesFiles:

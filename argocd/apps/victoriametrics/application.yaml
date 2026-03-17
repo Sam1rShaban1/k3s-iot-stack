@@ -6,9 +6,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/VictoriaMetrics/helm-charts
-    targetRevision: v0.15.3
-    path: charts/victoria-metrics-single
+    repoURL: https://victoriametrics.github.io/helm-charts
+    targetRevision: 0.15.3
+    chart: victoria-metrics-single
     helm:
       releaseName: victoriametrics
       valuesFiles:

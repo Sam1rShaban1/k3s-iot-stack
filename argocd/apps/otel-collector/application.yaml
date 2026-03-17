@@ -6,9 +6,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/open-telemetry/opentelemetry-helm-charts
-    targetRevision: opentelemetry-collector-0.69.0
-    path: charts/opentelemetry-collector
+    repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+    targetRevision: 0.69.0
+    chart: opentelemetry-collector
     helm:
       releaseName: otel-collector
       valuesFiles:
