@@ -22,22 +22,6 @@ spec:
                   resources:
                     requests:
                       storage: 10Gi
-            additionalScrapeConfigs:
-              - job_name: 'emqx'
-                static_configs:
-                  - targets: ['emqx.emqx.svc.cluster.local:18083']
-                metrics_path: '/api/v5/prometheus/stats'
-                scrape_interval: 15s
-              - job_name: 'nats'
-                static_configs:
-                  - targets: ['nats.nats.svc.cluster.local:8222']
-                metrics_path: '/varz'
-                scrape_interval: 15s
-              - job_name: 'victoriametrics'
-                static_configs:
-                  - targets: ['victoria-metrics-single.victoriametrics.svc.cluster.local:8428']
-                metrics_path: '/metrics'
-                scrape_interval: 15s
         grafana:
           persistence:
             enabled: true
@@ -46,8 +30,10 @@ spec:
           service:
             type: LoadBalancer
             loadBalancerIP: 192.168.1.242
+        prometheus-node-exporter:
+          enabled: true
         prometheusOperator:
-          admissionWebhooks:
+          enabled: true
             patch:
               resources:
                 requests:

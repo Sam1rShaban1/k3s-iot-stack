@@ -6,13 +6,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://emqx.github.io/emqx-helm-charts
-    targetRevision: 5.8.0
-    chart: emqx
-    helm:
-      releaseName: emqx
-      valuesFiles:
-        - ../../files/emqx-values.yaml
+    repoURL: https://github.com/emqx/emqx-helm-charts
+    targetRevision: main
+    path: charts/emqx
   destination:
     server: https://kubernetes.default.svc
     namespace: emqx
