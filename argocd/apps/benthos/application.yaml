@@ -11,8 +11,32 @@ spec:
     chart: benthos
     helm:
       releaseName: benthos
-      valuesFiles:
-        - ../../files/benthos-values.yaml
+      parameters:
+        - name: replicaCount
+          value: "1"
+        - name: persistence.enabled
+          value: "false"
+      values: |
+        replicaCount: 1
+        persistence:
+          enabled: false
+        config:
+          http:
+            address: 0.0.0.0:4195
+            enabled: true
+          input:
+            generate:
+              mapping: 'root = {"message": "hello"}'
+              interval: 30s
+          output:
+            stdout:
+              codec: lines
+        nodeSelector:
+          kubernetes.io/arch: arm64
+        tolerations:
+        - key: "arm"
+          operator: "Exists"
+          effect: "NoSchedule"
   destination:
     server: https://kubernetes.default.svc
     namespace: benthos

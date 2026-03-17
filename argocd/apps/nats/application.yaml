@@ -7,7 +7,7 @@ spec:
   project: default
   source:
     repoURL: https://nats-io.github.io/k8s/helm/charts
-    targetRevision: 0.25.0
+    targetRevision: 2.12.5
     chart: nats
     helm:
       releaseName: nats
