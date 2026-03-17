@@ -23,14 +23,35 @@ spec:
           - -c
           - |
             pip install requests nats-py --quiet
+            # Create health check server
+            cat > /tmp/healthserver.py << 'HEOF'
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            import threading
+            class HealthHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b'OK')
+                def log_message(self, format, *args):
+                    pass
+            server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+            thread = threading.Thread(target=server.serve_forever)
+            thread.daemon = True
+            thread.start()
+            print("Health server started on port 8080")
+            HEOF
+            
             # Create a simple consumer script
             cat > /tmp/consumer.py << 'EOF'
             import asyncio
             import json
             import time
             import requests
+            import os
             from nats.aio.client import Client as NATS
             from datetime import datetime
+            
+            VM_URL = os.getenv("VICTORIA_METRICS_URL", "http://victoria-metrics-single.victoriametrics.svc.cluster.local:8428/api/v1/write")
             
             async def run():
                 nc = NATS()
@@ -83,9 +104,10 @@ spec:
                         if metrics:
                             vm_data = "\n".join(metrics)
                             requests.post(
-                                "http://victoria-metrics-single.victoriametrics.svc.cluster.local:8428/api/v1/write",
+                                VM_URL,
                                 data=vm_data,
-                                headers={'Content-Type': 'text/plain'}
+                                headers={'Content-Type': 'text/plain'},
+                                timeout=5
                             )
                         
                         await msg.ack()
@@ -104,6 +126,7 @@ spec:
             asyncio.run(run())
             EOF
             
+            python3 /tmp/healthserver.py &
             python3 /tmp/consumer.py
         resources:
           requests:
@@ -121,6 +144,27 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        - name: VICTORIA_METRICS_URL
+          value: "http://victoria-metrics-single.victoriametrics.svc.cluster.local:8428/api/v1/write"
+        ports:
+        - containerPort: 8080
+          name: http
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
       nodeSelector:
         kubernetes.io/arch: arm64
       tolerations:

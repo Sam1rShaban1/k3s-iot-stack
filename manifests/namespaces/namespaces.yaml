@@ -1,0 +1,72 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nats
+  labels:
+    name: nats
+    tier: messaging
+    component: nats-jetstream
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nats-consumer
+  labels:
+    name: nats-consumer
+    tier: processing
+    component: consumer
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: emqx
+  labels:
+    name: emqx
+    tier: edge
+    component: mqtt-broker
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: benthos
+  labels:
+    name: benthos
+    tier: processing
+    component: stream-processor
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: victoriametrics
+  labels:
+    name: victoriametrics
+    tier: monitoring
+    component: metrics-storage
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    name: monitoring
+    tier: monitoring
+    component: prometheus-grafana
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logging
+  labels:
+    name: logging
+    tier: monitoring
+    component: loki-tempo
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-collector
+  labels:
+    name: otel-collector
+    tier: monitoring
+    component: tracing
