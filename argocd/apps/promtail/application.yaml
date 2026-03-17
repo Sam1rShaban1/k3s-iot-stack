@@ -11,7 +11,7 @@ spec:
     path: production/helm/promtail
     helm:
       releaseName: promtail
-      values:
+      values: |
         config:
           server:
             http_listen_port: 3101

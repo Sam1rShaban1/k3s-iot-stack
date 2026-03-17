@@ -11,7 +11,7 @@ spec:
     path: production/helm/loki
     helm:
       releaseName: loki
-      values:
+      values: |
         loki:
           auth_enabled: false
           commonConfig:
