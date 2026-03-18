@@ -6,9 +6,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/emqx/emqx-helm-charts
-    targetRevision: main
-    path: charts/emqx
+    repoURL: https://repos.emqx.io/charts
+    targetRevision: 5.8.0
+    chart: emqx
   destination:
     server: https://kubernetes.default.svc
     namespace: emqx

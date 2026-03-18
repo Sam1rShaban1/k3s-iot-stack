@@ -44,6 +44,8 @@ spec:
     jsonPointers:
     - /spec
     kind: CustomResourceDefinition
+  - group: monitoring.coreos.com
+    kind: Prometheus
   syncPolicy:
     automated:
       prune: true
