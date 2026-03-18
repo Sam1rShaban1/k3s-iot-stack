@@ -13,8 +13,43 @@ spec:
     chart: nats
     helm:
       releaseName: nats
-      valuesFiles:
-        - ../../files/nats-values.yaml
+      values: |
+        replicaCount: 1
+        jetstream:
+          enabled: true
+          fileStore:
+            enabled: true
+            storageClass: local-path
+            storageSize: 2Gi
+          memoryStore:
+            enabled: true
+            maxSize: 512Mi
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        nats:
+          image: nats:2.10.15-alpine
+          cluster:
+            enabled: false
+          mqtt:
+            enabled: true
+            port: 1883
+        service:
+          type: ClusterIP
+        persistence:
+          enabled: true
+          storageClass: local-path
+          size: 2Gi
+        nodeSelector:
+          kubernetes.io/arch: arm64
+        tolerations:
+        - key: "arm"
+          operator: "Exists"
+          effect: "NoSchedule"
   destination:
     server: https://kubernetes.default.svc
     namespace: nats

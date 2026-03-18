@@ -3,8 +3,6 @@ kind: Application
 metadata:
   name: nats-consumer
   namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "7"
 spec:
   project: default
   source:
@@ -20,4 +18,3 @@ spec:
       selfHeal: true
     syncOptions:
     - CreateNamespace=true
-    - RespectIgnoreDifferences=true
