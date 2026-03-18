@@ -46,6 +46,15 @@ spec:
     kind: CustomResourceDefinition
   - group: monitoring.coreos.com
     kind: Prometheus
+  - group: ""
+    kind: ServiceAccount
+    name: monitoring-kube-prometheus-admission
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: monitoring-kube-prometheus-admission
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRoleBinding
+    name: monitoring-kube-prometheus-admission
   syncPolicy:
     automated:
       prune: true
