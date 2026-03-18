@@ -3,5 +3,3 @@ kind: Kustomization
 
 resources:
   - namespaces.yaml
-  - pod-disruption-budgets.yaml
-  - network-policies.yaml
