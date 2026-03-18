@@ -1,23 +1,24 @@
-replicaCount: 3
+# NATS configuration for single-node Pi cluster
+replicaCount: 1
 
 # NATS JetStream configuration
 jetstream:
   enabled: true
   fileStore:
     enabled: true
-    storageClass: longhorn
-    storageSize: 8Gi
+    storageClass: local-path
+    storageSize: 2Gi
   memoryStore:
     enabled: true
-    maxSize: 2Gi
+    maxSize: 512Mi
 
 resources:
   requests:
-    cpu: 300m
-    memory: 384Mi
+    cpu: 200m
+    memory: 256Mi
   limits:
-    cpu: 600m
-    memory: 768Mi
+    cpu: 500m
+    memory: 512Mi
 
 # NATS configuration
 nats:
@@ -26,27 +27,14 @@ nats:
   monitorPort: 8222
   httpPort: 8222
   cluster:
-    enabled: true
-    name: nats-cluster
-    replicas: 3
-    # Cluster optimizations for gigabit network
-    noAdvertise: false
-    routes:
-      - nats://nats-0.nats-headless.nats.svc.cluster.local:6222
-      - nats://nats-1.nats-headless.nats.svc.cluster.local:6222
-      - nats://nats-2.nats-headless.nats.svc.cluster.local:6222
+    enabled: false  # Disabled for single node
   
   # JetStream specific settings
   jetstream:
     enabled: true
     storeDir: /data/jetstream
-    maxMemoryStore: 2Gi
-    maxFileStore: 8Gi
-    # Performance optimizations
-    maxOutstandingAcks: 1000
-    maxAckPending: 10000
-    maxBytes: 1GB
-    maxAge: "24h"
+    maxMemoryStore: 512Mi
+    maxFileStore: 2Gi
     
   # MQTT gateway for IoT compatibility
   mqtt:
@@ -69,23 +57,12 @@ service:
 # Persistence for JetStream
 persistence:
   enabled: true
-  storageClass: longhorn
-  size: 8Gi
+  storageClass: local-path
+  size: 2Gi
 
-# Pi4 optimizations
+# Pi optimizations
 nodeSelector:
   kubernetes.io/arch: arm64
-
-affinity:
-  podAntiAffinity:
-    requiredDuringSchedulingIgnoredDuringExecution:
-    - labelSelector:
-        matchExpressions:
-        - key: app.kubernetes.io/name
-          operator: In
-          values:
-          - nats
-      topologyKey: kubernetes.io/hostname
 
 tolerations:
 - key: "arm"
@@ -104,21 +81,8 @@ config:
   logtime_utc: true
   debug: false
   trace: false
-  # Network optimizations
-  max_connections: 65536
+  max_connections: 1000
   max_payload: 1048576  # 1MB
-  max_control_line: 524288
-  ping_interval: "2m"
-  ping_max: 2
-  write_deadline: "2s"
-  # JetStream performance
-  jetstream:
-    max_file_size: 104857600  # 100MB
-    sync_interval: "30s"
-    compact_interval: "5m"
-
-# Priority class for critical messaging service
-priorityClassName: system-cluster-critical
 
 # Health checks
 livenessProbe:
