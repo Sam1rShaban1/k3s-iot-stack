@@ -1,0 +1,108 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-consumer-script
+  namespace: nats-consumer
+data:
+  consumer.py: |
+    import asyncio
+    import json
+    import time
+    import sys
+    import os
+    from nats.aio.client import Client as NATS
+    from nats.aio.utils import inbox
+    import requests
+
+    NATS_URL = os.getenv("NATS_URL", "nats://nats.nats.svc.cluster.local:4222")
+    VM_URL = os.getenv("VICTORIA_METRICS_URL", "http://victoria-metrics-single.victoriametrics.svc.cluster.local:8428/api/v1/write")
+    STREAM = "IOT_DATA"
+    SUBJECT = "iot.data"
+    CONSUMER = "metrics-consumer"
+
+    async def create_stream_and_consumer():
+        nc = NATS()
+        await nc.connect(NATS_URL)
+        js = nc.jetstream()
+        
+        # Create stream
+        try:
+            await js.add_stream(name=STREAM, subjects=[SUBJECT])
+            print(f"Created stream: {STREAM}")
+        except Exception as e:
+            print(f"Stream may already exist: {e}")
+        
+        # Create consumer
+        try:
+            await js.add_consumer(
+                STREAM,
+                durable_name=CONSUMER,
+                deliver_policy="last",
+                ack_policy="explicit"
+            )
+            print(f"Created consumer: {CONSUMER}")
+        except Exception as e:
+            print(f"Consumer may already exist: {e}")
+        
+        return nc, js
+
+    async def send_to_victoria_metrics(data):
+        try:
+            current_time = int(time.time() * 1000)
+            data['nats_exit_ts'] = current_time
+            
+            if 'ts' in data:
+                data['end_to_end_latency_ms'] = current_time - data['ts']
+            
+            metrics = []
+            for key, value in data.items():
+                if isinstance(value, (int, float)):
+                    metric_name = f"iot_sensor_{key}"
+                    device_id = data.get('device_id', 'unknown')
+                    labels = f'device_id="{device_id}"'
+                    metrics.append(f"{metric_name}{{{labels}}} {value}")
+            
+            if metrics:
+                vm_data = "\n".join(metrics)
+                requests.post(
+                    VM_URL,
+                    data=vm_data,
+                    headers={'Content-Type': 'text/plain'},
+                    timeout=5
+                )
+                return True
+        except Exception as e:
+            print(f"Error sending to VictoriaMetrics: {e}")
+        return False
+
+    async def consume_messages():
+        nc, js = await create_stream_and_consumer()
+        
+        print(f"Subscribing to {SUBJECT}...")
+        print(f"Sending metrics to {VM_URL}")
+        
+        async def message_handler(msg):
+            try:
+                data = json.loads(msg.data.decode())
+                print(f"Received: {data.get('device_id', 'unknown')}")
+                
+                if await send_to_victoria_metrics(data):
+                    await msg.ack()
+                else:
+                    await msg.nak()
+            except Exception as e:
+                print(f"Error processing message: {e}")
+                await msg.nak()
+        
+        await js.subscribe(SUBJECT, consumer=CONSUMER, cb=message_handler)
+        print("Consumer running. Press Ctrl+C to exit.")
+        
+        while True:
+            await asyncio.sleep(1)
+
+    if __name__ == "__main__":
+        try:
+            asyncio.run(consume_messages())
+        except KeyboardInterrupt:
+            print("Shutting down...")
+            sys.exit(0)

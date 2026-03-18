@@ -16,52 +16,76 @@ spec:
       containers:
       - name: nats-consumer
         image: python:3.11-slim
-        command: ["python3", "-c"]
+        command: ["sh", "-c"]
         args:
           - |
-            from http.server import HTTPServer, BaseHTTPRequestHandler
-            import threading
+            pip install --no-cache-dir nats-py requests &&
+            python3 -c '
+            import asyncio
+            import json
             import time
-            
-            class HealthHandler(BaseHTTPRequestHandler):
-                def do_GET(self):
-                    self.send_response(200)
-                    self.end_headers()
-                    self.wfile.write(b'OK')
-                def log_message(self, format, *args):
-                    pass
-            
-            print("Starting health server on port 8080...")
-            server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
-            thread = threading.Thread(target=server.serve_forever)
-            thread.daemon = True
-            thread.start()
-            print("Health server started. Waiting for messages...")
-            while True:
-                time.sleep(30)
-                print(f"[{time.strftime('%H:%M:%S')}] Still running...")
-        ports:
-        - containerPort: 8080
-          name: http
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 20
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 8080
-          initialDelaySeconds: 3
-          periodSeconds: 10
-        resources:
-          requests:
-            cpu: 50m
-            memory: 64Mi
-          limits:
-            cpu: 100m
-            memory: 128Mi
+            import os
+            import requests
+            from nats.aio.client import Client as NATS
+
+            NATS_URL = os.getenv("NATS_URL", "nats://nats.nats.svc.cluster.local:4222")
+            VM_URL = os.getenv("VICTORIA_METRICS_URL", "http://victoria-metrics-single.victoriametrics.svc.cluster.local:8428/api/v1/write")
+            STREAM = "IOT_DATA"
+            SUBJECT = "iot.data"
+            CONSUMER = "metrics-consumer"
+
+            async def setup():
+                nc = NATS()
+                await nc.connect(NATS_URL)
+                js = nc.jetstream()
+                try:
+                    await js.add_stream(name=STREAM, subjects=[SUBJECT])
+                    print(f"Stream: {STREAM}")
+                except: pass
+                try:
+                    await js.add_consumer(STREAM, durable_name=CONSUMER, deliver_policy="last", ack_policy="explicit")
+                    print(f"Consumer: {CONSUMER}")
+                except: pass
+                return nc, js
+
+            def send_vm(data):
+                try:
+                    t = int(time.time()*1000)
+                    data["nats_exit_ts"] = t
+                    if "ts" in data:
+                        data["end_to_end_latency_ms"] = t - data["ts"]
+                    m = []
+                    for k,v in data.items():
+                        if isinstance(v,(int,float)):
+                            m.append(f"iot_sensor_{k}{{device_id=\"{data.get('device_id','unknown')}\"}} {v}")
+                    if m:
+                        requests.post(VM_URL, data="\n".join(m), headers={"Content-Type":"text/plain"}, timeout=5)
+                except Exception as e:
+                    print(f"VM: {e}")
+
+            async def h(msg):
+                try:
+                    d = json.loads(msg.data.decode())
+                    print(f"MSG: {d.get('device_id')}")
+                    send_vm(d)
+                    await msg.ack()
+                except Exception as e:
+                    print(f"Err: {e}")
+                    await msg.nak()
+
+            async def main():
+                nc,js = await setup()
+                print(f"Listening {SUBJECT}")
+                await js.subscribe(SUBJECT, consumer=CONSUMER, cb=h)
+                while 1: await asyncio.sleep(1)
+
+            asyncio.run(main())
+            '
+        env:
+        - name: NATS_URL
+          value: "nats://nats.nats.svc.cluster.local:4222"
+        - name: VICTORIA_METRICS_URL
+          value: "http://victoria-metrics-single.victoriametrics.svc.cluster.local:8428/api/v1/write"
       nodeSelector:
         kubernetes.io/arch: arm64
       tolerations:

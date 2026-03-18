@@ -8,13 +8,28 @@ data:
     http:
       address: 0.0.0.0:4195
       enabled: true
+    
     input:
-      generate:
-        mapping: 'root = {"message": "hello from benthos", "timestamp": now()}'
-        interval: 30s
+      mqtt:
+        urls:
+          - tcp://emqx.emqx.svc.cluster.local:1883
+        topics:
+          - sensors/+
+        client_id: benthos-consumer
+        qos: 1
+    
+    pipeline:
+      processors:
+        - mapping: |
+            root = this
+            root.benthos_entry_ts = now_unix_milli()
+    
     output:
-      stdout:
-        codec: lines
+      nats:
+        urls:
+          - nats://nats.nats.svc.cluster.local:4222
+        subject: iot.data
+        
 ---
 apiVersion: apps/v1
 kind: Deployment
