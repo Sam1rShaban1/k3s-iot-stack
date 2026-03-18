@@ -3,21 +3,12 @@ kind: Application
 metadata:
   name: benthos
   namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "6"
 spec:
   project: default
   source:
-    repoURL: https://benthosdev.github.io/charts
-    targetRevision: 0.6.0
-    chart: benthos
-    helm:
-      releaseName: benthos
-      parameters:
-        - name: replicaCount
-          value: "1"
-        - name: persistence.enabled
-          value: "false"
+    repoURL: https://github.com/Sam1rShaban1/k3s-iot-stack
+    targetRevision: main
+    path: manifests/benthos
   destination:
     server: https://kubernetes.default.svc
     namespace: benthos
@@ -27,4 +18,3 @@ spec:
       selfHeal: true
     syncOptions:
     - CreateNamespace=true
-    - RespectIgnoreDifferences=true
