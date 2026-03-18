@@ -11,6 +11,9 @@ spec:
     path: charts/kube-prometheus-stack
     helm:
       releaseName: monitoring
+      parameters:
+      - name: prometheusOperator.admissionWebhooks.enabled
+        value: "false"
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
@@ -19,22 +22,16 @@ spec:
     kind: CustomResourceDefinition
   - group: monitoring.coreos.com
     kind: Prometheus
-  - kind: ServiceAccount
-    name: monitoring-kube-prometheus-admission
-  - kind: ClusterRole
-    name: monitoring-kube-prometheus-admission
-  - kind: ClusterRoleBinding
-    name: monitoring-kube-prometheus-admission
-  - kind: Role
-    name: monitoring-kube-prometheus-admission
-  - kind: RoleBinding
-    name: monitoring-kube-prometheus-admission
-  - kind: Job
-    name: monitoring-kube-prometheus-admission-create
+  - group: monitoring.coreos.com
+    kind: Alertmanager
+  - group: monitoring.coreos.com
+    kind: PrometheusAgent
+  - group: monitoring.coreos.com
+    kind: ThanosRuler
+  - kind: MutatingWebhookConfiguration
+  - kind: ValidatingWebhookConfiguration
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
     syncOptions:
     - CreateNamespace=true
     - RespectIgnoreDifferences=true
+    - ServerSideApply=true
