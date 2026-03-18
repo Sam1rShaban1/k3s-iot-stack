@@ -40,12 +40,14 @@ spec:
                 js = nc.jetstream()
                 try:
                     await js.add_stream(name=STREAM, subjects=[SUBJECT])
-                    print(f"Stream: {STREAM}")
-                except: pass
+                    print("Stream: " + STREAM)
+                except Exception as e:
+                    print("Stream error: " + str(e))
                 try:
                     await js.add_consumer(STREAM, durable_name=CONSUMER, deliver_policy="last", ack_policy="explicit")
-                    print(f"Consumer: {CONSUMER}")
-                except: pass
+                    print("Consumer: " + CONSUMER)
+                except Exception as e:
+                    print("Consumer error: " + str(e))
                 return nc, js
 
             def send_vm(data):
@@ -57,27 +59,28 @@ spec:
                     m = []
                     for k,v in data.items():
                         if isinstance(v,(int,float)):
-                            m.append(f"iot_sensor_{k}{{device_id=\"{data.get('device_id','unknown')}\"}} {v}")
+                            m.append("iot_sensor_" + str(k) + "{device_id=\"" + str(data.get("device_id","unknown")) + "\"} " + str(v))
                     if m:
                         requests.post(VM_URL, data="\n".join(m), headers={"Content-Type":"text/plain"}, timeout=5)
                 except Exception as e:
-                    print(f"VM: {e}")
+                    print("VM error: " + str(e))
 
             async def h(msg):
                 try:
                     d = json.loads(msg.data.decode())
-                    print(f"MSG: {d.get('device_id')}")
+                    print("MSG: " + str(d.get("device_id")))
                     send_vm(d)
                     await msg.ack()
                 except Exception as e:
-                    print(f"Err: {e}")
+                    print("Err: " + str(e))
                     await msg.nak()
 
             async def main():
-                nc,js = await setup()
-                print(f"Listening {SUBJECT}")
-                await js.subscribe(SUBJECT, consumer=CONSUMER, cb=h)
-                while 1: await asyncio.sleep(1)
+                nc, js = await setup()
+                print("Listening " + SUBJECT)
+                sub = await js.subscribe(SUBJECT, durable=CONSUMER)
+                async for msg in sub.messages:
+                    await h(msg)
 
             asyncio.run(main())
             '

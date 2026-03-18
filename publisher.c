@@ -14,18 +14,19 @@
 
 int main(int argc, char *argv[]) {
   // Check for required arguments
-  if (argc < 5) {
-    printf("Usage: %s <Broker_IP> <Base_ClientID> <Delay_US> <Topic>\n",
+  if (argc < 6) {
+    printf("Usage: %s <Broker_IP> <Port> <Base_ClientID> <Delay_US> <Topic>\n",
            argv[0]);
-    printf("Example: %s 192.168.1.50 sensor_node 200000 sensors/data\n",
+    printf("Example: %s 192.168.1.50 30295 sensor_node 200000 sensors/data\n",
            argv[0]);
     return 1;
   }
 
   char *broker_ip = argv[1];
-  char *base_id = argv[2];
-  int delay_us = atoi(argv[3]);
-  char *topic = argv[4];
+  int broker_port = atoi(argv[2]);
+  char *base_id = argv[3];
+  int delay_us = atoi(argv[4]);
+  char *topic = argv[5];
 
   // Create unique Client ID using PID to allow high concurrency
   int pid = (int)getpid();
@@ -34,7 +35,7 @@ int main(int argc, char *argv[]) {
 
   // Setup MQTT Connection
   char broker_address[128];
-  sprintf(broker_address, "tcp://%s:1883", broker_ip);
+  sprintf(broker_address, "tcp://%s:%d", broker_ip, broker_port);
 
   MQTTClient client;
   MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;

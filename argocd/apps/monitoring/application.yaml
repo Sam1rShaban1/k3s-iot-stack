@@ -3,8 +3,6 @@ kind: Application
 metadata:
   name: monitoring
   namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "5"
 spec:
   project: default
   source:
@@ -13,48 +11,26 @@ spec:
     path: charts/kube-prometheus-stack
     helm:
       releaseName: monitoring
-      values: |
-        prometheus:
-          prometheusSpec:
-            storageSpec:
-              volumeClaimTemplate:
-                spec:
-                  storageClassName: local-path
-                  accessModes: ["ReadWriteOnce"]
-                  resources:
-                    requests:
-                      storage: 10Gi
-        grafana:
-          persistence:
-            enabled: true
-            storageClassName: local-path
-            size: 5Gi
-          service:
-            type: LoadBalancer
-            loadBalancerIP: 192.168.1.242
-        prometheus-node-exporter:
-          enabled: true
-        prometheusOperator:
-          enabled: true
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
   ignoreDifferences:
   - group: apiextensions.k8s.io
-    jsonPointers:
-    - /spec
     kind: CustomResourceDefinition
   - group: monitoring.coreos.com
     kind: Prometheus
-  - group: ""
-    kind: ServiceAccount
+  - kind: ServiceAccount
     name: monitoring-kube-prometheus-admission
-  - group: rbac.authorization.k8s.io
-    kind: ClusterRole
+  - kind: ClusterRole
     name: monitoring-kube-prometheus-admission
-  - group: rbac.authorization.k8s.io
-    kind: ClusterRoleBinding
+  - kind: ClusterRoleBinding
     name: monitoring-kube-prometheus-admission
+  - kind: Role
+    name: monitoring-kube-prometheus-admission
+  - kind: RoleBinding
+    name: monitoring-kube-prometheus-admission
+  - kind: Job
+    name: monitoring-kube-prometheus-admission-create
   syncPolicy:
     automated:
       prune: true
