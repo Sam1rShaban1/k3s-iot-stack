@@ -25,7 +25,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
       },
       "fieldConfig": {
         "defaults": {
@@ -104,9 +104,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "histogram_quantile(0.95, rate(latency_sensor_to_benthos_ms_bucket[5m]))",
+          "expr": "iot_sensor_end_to_end_latency_ms",
           "interval": "",
           "legendFormat": "95th percentile latency",
           "refId": "A"
@@ -114,9 +114,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "histogram_quantile(0.50, rate(latency_sensor_to_benthos_ms_bucket[5m]))",
+          "expr": "iot_sensor_temp",
           "interval": "",
           "legendFormat": "50th percentile latency",
           "refId": "B"
@@ -128,7 +128,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
       },
       "fieldConfig": {
         "defaults": {
@@ -203,41 +203,31 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "rate(emqx_messages_received_total[5m])",
+          "expr": "iot_sensor_ts",
           "interval": "",
-          "legendFormat": "EMQX messages received",
+          "legendFormat": "Sensor Timestamp",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "rate(benthos_output_messages_total[5m])",
+          "expr": "iot_sensor_nats_exit_ts",
           "interval": "",
-          "legendFormat": "Benthos messages processed",
+          "legendFormat": "NATS Exit Timestamp",
           "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "rate(nats_jetstream_stream_messages_total[5m])",
-          "interval": "",
-          "legendFormat": "NATS messages",
-          "refId": "C"
         }
       ],
-      "title": "Message Throughput",
+      "title": "Message Timestamps",
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
       },
       "fieldConfig": {
         "defaults": {
@@ -284,21 +274,21 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "emqx_connections_current",
+          "expr": "count(iot_sensor_temp)",
           "interval": "",
-          "legendFormat": "EMQX Connections",
+          "legendFormat": "Active Sensors",
           "refId": "A"
         }
       ],
-      "title": "EMQX Connections",
+      "title": "Active Sensors",
       "type": "piechart"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
       },
       "fieldConfig": {
         "defaults": {
@@ -353,21 +343,21 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "sum(emqx_subscriptions_current)",
+          "expr": "iot_sensor_pm25",
           "interval": "",
-          "legendFormat": "Total Subscriptions",
+          "legendFormat": "PM2.5 {{device_id}}",
           "refId": "A"
         }
       ],
-      "title": "EMQX Subscriptions",
+      "title": "PM2.5 Levels",
       "type": "stat"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
       },
       "fieldConfig": {
         "defaults": {
@@ -442,31 +432,31 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "rate(container_network_receive_bytes_total{namespace=~\"emqx|benthos|nats|victoriametrics\"}[5m])",
+          "expr": "iot_sensor_temp",
           "interval": "",
-          "legendFormat": "{{namespace}}/{{pod}} RX",
+          "legendFormat": "Temperature {{device_id}}",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "rate(container_network_transmit_bytes_total{namespace=~\"emqx|benthos|nats|victoriametrics\"}[5m])",
+          "expr": "iot_sensor_hum",
           "interval": "",
-          "legendFormat": "{{namespace}}/{{pod}} TX",
+          "legendFormat": "Humidity {{device_id}}",
           "refId": "B"
         }
       ],
-      "title": "Network I/O",
+      "title": "Temperature & Humidity",
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
       },
       "fieldConfig": {
         "defaults": {
@@ -541,31 +531,21 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "rate(benthos_processing_duration_ms_sum[5m]) / rate(benthos_processing_duration_ms_count[5m])",
+          "expr": "iot_sensor_end_to_end_latency_ms",
           "interval": "",
-          "legendFormat": "Benthos Processing Time",
+          "legendFormat": "Latency {{device_id}}",
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "rate(nats_jetstream_stream_consumer_lag[5m])",
-          "interval": "",
-          "legendFormat": "NATS Consumer Lag",
-          "refId": "B"
         }
       ],
-      "title": "Service Processing Times",
+      "title": "End-to-End Latency",
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
       },
       "fieldConfig": {
         "defaults": {
@@ -640,15 +620,15 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "container_memory_usage_bytes{namespace=~\"emqx|benthos|nats|victoriametrics\"}",
+          "expr": "iot_sensor_pm10",
           "interval": "",
-          "legendFormat": "{{namespace}}/{{pod}}",
+          "legendFormat": "PM10 {{device_id}}",
           "refId": "A"
         }
       ],
-      "title": "Memory Usage by Service",
+      "title": "PM10 Levels",
       "type": "timeseries"
     }
   ],

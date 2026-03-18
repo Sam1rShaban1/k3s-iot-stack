@@ -20,7 +20,7 @@ spec:
         args:
           - |
             pip install --no-cache-dir nats-py requests &&
-            python3 -c '
+            python3 -u -c '
             import asyncio
             import json
             import time
@@ -29,39 +29,46 @@ spec:
             from nats.aio.client import Client as NATS
 
             NATS_URL = os.getenv("NATS_URL", "nats://nats.nats.svc.cluster.local:4222")
-            VM_URL = os.getenv("VICTORIA_METRICS_URL", "http://victoria-metrics-single.victoriametrics.svc.cluster.local:8428/api/v1/write")
+            VM_URL = os.getenv("VICTORIA_METRICS_URL", "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/import/prometheus")
             STREAM = "IOT_DATA"
             SUBJECT = "iot.data"
-            CONSUMER = "metrics-consumer"
+            CONSUMER_PUSH = "metrics-consumer-push"
+            DELIVERY_SUBJECT = "iot.consumer.delivery"
 
             async def setup():
                 nc = NATS()
                 await nc.connect(NATS_URL)
                 js = nc.jetstream()
-                try:
-                    await js.add_stream(name=STREAM, subjects=[SUBJECT])
-                    print("Stream: " + STREAM)
-                except Exception as e:
-                    print("Stream error: " + str(e))
-                try:
-                    await js.add_consumer(STREAM, durable_name=CONSUMER, deliver_policy="last", ack_policy="explicit")
-                    print("Consumer: " + CONSUMER)
-                except Exception as e:
-                    print("Consumer error: " + str(e))
+                for i in range(10):
+                    try:
+                        await js.add_stream(name=STREAM, subjects=[SUBJECT])
+                        print("Stream: " + STREAM)
+                        break
+                    except Exception as e:
+                        print(f"Stream attempt {i+1} failed: {e}")
+                        await asyncio.sleep(1)
                 return nc, js
 
             def send_vm(data):
                 try:
-                    t = int(time.time()*1000)
-                    data["nats_exit_ts"] = t
+                    nats_exit_ts = int(time.time() * 1000)
+                    data["nats_exit_ts"] = nats_exit_ts
                     if "ts" in data:
-                        data["end_to_end_latency_ms"] = t - data["ts"]
-                    m = []
-                    for k,v in data.items():
-                        if isinstance(v,(int,float)):
-                            m.append("iot_sensor_" + str(k) + "{device_id=\"" + str(data.get("device_id","unknown")) + "\"} " + str(v))
-                    if m:
-                        requests.post(VM_URL, data="\n".join(m), headers={"Content-Type":"text/plain"}, timeout=5)
+                        data["end_to_end_latency_ms"] = nats_exit_ts - data["ts"]
+                    
+                    metrics = []
+                    for k, v in data.items():
+                        if isinstance(v, (int, float)):
+                            device = data.get("device_id", "unknown")
+                            metrics.append("iot_sensor_{key}{{device_id=\"{dev}\"}} {val}".format(key=k, dev=device, val=v))
+                    
+                    if metrics:
+                        resp = requests.post(VM_URL, data="\n".join(metrics), 
+                                           headers={"Content-Type": "text/plain"}, timeout=5)
+                        if resp.status_code in [200, 204]:
+                            print("VM: sent " + str(len(metrics)) + " metrics for " + str(data.get("device_id", "unknown")))
+                        else:
+                            print("VM error: " + str(resp.status_code) + " " + resp.text[:100])
                 except Exception as e:
                     print("VM error: " + str(e))
 
@@ -74,11 +81,20 @@ spec:
                 except Exception as e:
                     print("Err: " + str(e))
                     await msg.nak()
-
+            
             async def main():
+                print("Starting NATS consumer...")
                 nc, js = await setup()
-                print("Listening " + SUBJECT)
-                sub = await js.subscribe(SUBJECT, durable=CONSUMER)
+                print("Creating push consumer...")
+                await asyncio.sleep(1)
+                try:
+                    await js.add_consumer(STREAM, durable_name=CONSUMER_PUSH, 
+                                        deliver_subject=DELIVERY_SUBJECT, ack_policy="explicit")
+                    print("Push consumer created")
+                except Exception as e:
+                    print(f"Push consumer error (may exist): {e}")
+                print("Subscribing to " + DELIVERY_SUBJECT)
+                sub = await nc.subscribe(DELIVERY_SUBJECT)
                 async for msg in sub.messages:
                     await h(msg)
 
@@ -88,7 +104,9 @@ spec:
         - name: NATS_URL
           value: "nats://nats.nats.svc.cluster.local:4222"
         - name: VICTORIA_METRICS_URL
-          value: "http://victoria-metrics-single.victoriametrics.svc.cluster.local:8428/api/v1/write"
+          value: "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/import/prometheus"
+        - name: PYTHONUNBUFFERED
+          value: "1"
       nodeSelector:
         kubernetes.io/arch: arm64
       tolerations:

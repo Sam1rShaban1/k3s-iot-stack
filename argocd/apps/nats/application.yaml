@@ -38,6 +38,12 @@ spec:
           mqtt:
             enabled: true
             port: 1883
+          config:
+            jetstream:
+              enabled: true
+              maxMem: 128MB
+              maxFile: 1GB
+              storeDir: /data/jetstream
         service:
           type: ClusterIP
         persistence:

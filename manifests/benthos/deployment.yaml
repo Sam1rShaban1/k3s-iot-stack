@@ -10,21 +10,20 @@ data:
       enabled: true
     
     input:
+      type: mqtt
       mqtt:
         urls:
           - tcp://emqx.emqx.svc.cluster.local:1883
         topics:
-          - sensors/+
+          - sensors/#
         client_id: benthos-consumer
         qos: 1
     
     pipeline:
-      processors:
-        - mapping: |
-            root = this
-            root.benthos_entry_ts = now_unix_milli()
+      processors: []
     
     output:
+      type: nats
       nats:
         urls:
           - nats://nats.nats.svc.cluster.local:4222

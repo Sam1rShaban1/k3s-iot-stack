@@ -25,7 +25,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
       },
       "fieldConfig": {
         "defaults": {
@@ -70,7 +70,7 @@
               },
               {
                 "color": "red",
-                "value": 80
+                "value": 500
               }
             ]
           },
@@ -87,8 +87,8 @@
       "id": 1,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
           "placement": "bottom"
         },
         "tooltip": {
@@ -100,22 +100,12 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "histogram_quantile(0.95, rate(iot_sensor_data_end_to_end_latency_ms_bucket[5m]))",
+          "expr": "iot_sensor_end_to_end_latency_ms",
           "interval": "",
-          "legendFormat": "95th percentile",
+          "legendFormat": "{{device_id}}",
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "expr": "histogram_quantile(0.50, rate(iot_sensor_data_end_to_end_latency_ms_bucket[5m]))",
-          "interval": "",
-          "legendFormat": "50th percentile",
-          "refId": "B"
         }
       ],
       "title": "End-to-End Latency",
@@ -124,7 +114,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
       },
       "fieldConfig": {
         "defaults": {
@@ -173,7 +163,7 @@
               }
             ]
           },
-          "unit": "ms"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -199,31 +189,31 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "avg(iot_sensor_data_latency_sensor_to_emqx_ms)",
+          "expr": "iot_sensor_temp",
           "interval": "",
-          "legendFormat": "Sensor → EMQX",
+          "legendFormat": "{{device_id}}",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "avg(iot_sensor_data_latency_benthos_to_nats_ms)",
+          "expr": "iot_sensor_hum",
           "interval": "",
-          "legendFormat": "Benthos → NATS",
+          "legendFormat": "Humidity {{device_id}}",
           "refId": "B"
         }
       ],
-      "title": "Per-Service Latency",
+      "title": "Temperature & Humidity",
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
       },
       "fieldConfig": {
         "defaults": {
@@ -270,21 +260,21 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "sum by (sensor_id) (rate(iot_sensor_data_value[5m]))",
+          "expr": "iot_sensor_pm25",
           "interval": "",
-          "legendFormat": "{{sensor_id}}",
+          "legendFormat": "{{device_id}}",
           "refId": "A"
         }
       ],
-      "title": "Message Rate by Sensor",
+      "title": "PM2.5 by Device",
       "type": "piechart"
     },
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
       },
       "fieldConfig": {
         "defaults": {
@@ -298,14 +288,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 50
-              },
-              {
-                "color": "red",
-                "value": 100
               }
             ]
           },
@@ -339,15 +321,15 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
           },
-          "expr": "sum(rate(iot_sensor_data_end_to_end_latency_ms_bucket[5m]))",
+          "expr": "count(iot_sensor_temp)",
           "interval": "",
-          "legendFormat": "Messages/sec",
+          "legendFormat": "Active Devices",
           "refId": "A"
         }
       ],
-      "title": "Total Message Throughput",
+      "title": "Active Devices",
       "type": "stat"
     }
   ],
