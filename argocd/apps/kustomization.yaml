@@ -4,8 +4,9 @@ kind: Kustomization
 resources:
   - ../../manifests/namespaces
   - metallb/application.yaml
-  - longhorn/application.yaml
+  # - longhorn/application.yaml  # Disabled - single node doesn't need distributed storage
   - nats/application.yaml
+  - emqx/application.yaml
   - victoriametrics/application.yaml
   - monitoring/application.yaml
   - benthos/application.yaml
