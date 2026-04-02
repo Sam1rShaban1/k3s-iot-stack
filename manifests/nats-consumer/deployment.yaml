@@ -51,10 +51,10 @@ spec:
 
             def send_vm(data):
                 try:
-                    nats_exit_ts = int(time.time() * 1000)
-                    data["nats_exit_ts"] = nats_exit_ts
-                    if "ts" in data:
-                        data["end_to_end_latency_ms"] = nats_exit_ts - data["ts"]
+                    vm_entry_ts = int(time.time() * 1000)
+                    data["nats_exit_ts"] = vm_entry_ts
+                    if "benthos_entry_ts" in data:
+                        data["benthos_to_nats_latency_ms"] = vm_entry_ts - data["benthos_entry_ts"]
                     
                     metrics = []
                     for k, v in data.items():
@@ -66,9 +66,9 @@ spec:
                         resp = requests.post(VM_URL, data="\n".join(metrics), 
                                            headers={"Content-Type": "text/plain"}, timeout=5)
                         if resp.status_code in [200, 204]:
-                            print("VM: sent " + str(len(metrics)) + " metrics for " + str(data.get("device_id", "unknown")))
+                            print("VM: sent " + str(len(metrics)) + " for " + str(data.get("device_id", "unknown")))
                         else:
-                            print("VM error: " + str(resp.status_code) + " " + resp.text[:100])
+                            print("VM error: " + str(resp.status_code))
                 except Exception as e:
                     print("VM error: " + str(e))
 
@@ -85,16 +85,8 @@ spec:
             async def main():
                 print("Starting NATS consumer...")
                 nc, js = await setup()
-                print("Creating push consumer...")
-                await asyncio.sleep(1)
-                try:
-                    await js.add_consumer(STREAM, durable_name=CONSUMER_PUSH, 
-                                        deliver_subject=DELIVERY_SUBJECT, ack_policy="explicit")
-                    print("Push consumer created")
-                except Exception as e:
-                    print(f"Push consumer error (may exist): {e}")
-                print("Subscribing to " + DELIVERY_SUBJECT)
-                sub = await nc.subscribe(DELIVERY_SUBJECT)
+                print("Subscribing to " + SUBJECT)
+                sub = await js.subscribe(subject=SUBJECT, stream=STREAM, durable=CONSUMER_PUSH)
                 async for msg in sub.messages:
                     await h(msg)
 

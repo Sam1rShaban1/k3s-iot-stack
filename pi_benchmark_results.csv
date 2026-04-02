@@ -1,0 +1,132 @@
+category,metric,value,unit,status,notes
+NODE INFO,Hostname,raspberrypi,,OK,Single-node k3s cluster
+NODE INFO,Kubernetes Version,v1.34.5+k3s1,,OK,
+NODE INFO,Node Role,control-plane,,OK,
+NODE INFO,Uptime,14,days,OK,
+NODE INFO,Platform,linux,,OK,
+CPU,Architecture,ARM64,,OK,Raspberry Pi
+CPU,Cores,4,cores,OK,
+CPU,Max Frequency,1.8,GHz,OK,
+CPU,Min Frequency,0.6,GHz,OK,
+CPU,Current Usage,3658,mcores,WARNING,91% utilization - very high
+CPU,Load Average 1m,15.81,,CRITICAL,>4x core count indicates severe overload
+CPU,Load Average 5m,15.57,,CRITICAL,Consistently overloaded
+CPU,Load Average 15m,15.27,,CRITICAL,Sustained high load
+CPU,Idle (core 0),8065.66,seconds,,
+CPU,User (core 0),61091.53,seconds,,High user-space activity
+CPU,System (core 0),18429.03,seconds,,
+CPU,IOWait (core 0),3686.83,seconds,WARNING,Significant I/O wait time
+CPU,Context Switches,2004453420,total,,Very high context switching
+CPU,Interrupts,1097497825,total,,High interrupt rate
+CPU,Forks,5760570,total,,
+MEMORY,Total,8200.56,MB,OK,
+MEMORY,Available,4919.70,MB,OK,~60% available
+MEMORY,Usage,4429,MB,OK,56% utilization
+MEMORY,Grafana Pod,400,MB,OK,Largest single pod
+MEMORY,ArgoCD Controller,177,MB,OK,
+MEMORY,OTel Collector,186,MB,OK,
+MEMORY,EMQX,228,MB,OK,
+MEMORY,MetalLB Speaker,130,MB,OK,
+MEMORY,VictoriaMetrics,109,MB,OK,
+MEMORY,CoreDNS,76,MB,OK,
+MEMORY,Prometheus Operator,80,MB,OK,
+MEMORY,Metrics Server,79,MB,OK,
+MEMORY,Benthos,82,MB,OK,
+MEMORY,NATS,26,MB,OK,
+MEMORY,NATS Consumer (avg),32,MB,OK,Across 3 replicas
+DISK,Total Capacity,60.96,GB,OK,mmcblk0p2 (eMMC/SD)
+DISK,Used,13.3,GB,OK,24% used
+DISK,Available,41.1,GB,OK,
+DISK,Root Filesystem Used,16.79,GB,OK,27.5% of 60.96 GB
+DISK,Root Filesystem Available,41.07,GB,OK,
+DISK,Boot Partition Available,444.8,MB,OK,/boot/firmware (vfat)
+DISK,PVC VictoriaMetrics,16,Gi,OK,Bound (local-path)
+DISK,Total Bytes Read,2.86,GB,,Since boot
+DISK,Total Bytes Written,192.66,GB,,WARNING,Very high write volume for SD card
+DISK,Write Time,1433548.29,seconds,CRITICAL,~16.6 days of cumulative write time
+DISK,Read Time,791.89,seconds,,
+DISK,I/O Time Weighted,1434340.17,seconds,WARNING,High I/O latency impact
+DISK,Reads Completed,61318,total,,
+DISK,Writes Completed,15722363,total,,Very high write count
+DISK,Device Type,mmcblk0,,WARNING,SD card/eMMC - limited write endurance
+NETWORK,wlan0 RX,1.83,GB,,WiFi interface
+NETWORK,cni0 RX,4.28,GB,,Container network bridge
+NETWORK,lo RX,24.05,GB,,Loopback (inter-pod traffic)
+NETWORK,tailscale0 RX,1.42,MB,,Tailscale VPN
+NETWORK,eth0 RX,0,bytes,,WARNING,Wired ethernet not active
+NETWORK,Network Drops,0,total,OK,No packet drops detected
+PODS,Total Namespaces,10,,OK,
+PODS,Total Pods,38,,OK,
+PODS,Running,32,,OK,
+PODS,Completed,5,,OK,Finished jobs
+PODS,Unknown,1,WARNING,,argocd-repo-server-69fb9fb66f-6ht9n
+PODS,Terminating,2,WARNING,,alertmanager-0 and prometheus-0
+PODS,Restart Count (total),~50,,WARNING,Most pods restarted ~26h ago
+ARGOCD,Application Controller,Running,1/1,OK,
+ARGOCD,Dex Server,Running,1/1,OK,
+ARGOCD,Notifications Controller,Running,1/1,OK,
+ARGOCD,Redis,Running,1/1,OK,
+ARGOCD,Repo Server,Unknown,0/1,CRITICAL,Status unknown - needs investigation
+ARGOCD,Server,Running,1/1,OK,
+MONITORING,Grafana,Running,3/3,OK,
+MONITORING,Prometheus Operator,Running,1/1,OK,
+MONITORING,Prometheus,Terminating,0/2,CRITICAL,Being replaced/restarted
+MONITORING,Alertmanager,Terminating,0/2,WARNING,Being replaced/restarted
+MONITORING,Kube State Metrics,Running,1/1,OK,
+MONITORING,Node Exporter,Running,1/1,OK,
+MONITORING,Prometheus Reachable,No,,CRITICAL,Connection refused on port 9090
+VICTORIAMETRICS,Server,Running,1/1,OK,
+VICTORIAMETRICS,Port,8428,,OK,
+VICTORIAMETRICS,NodePort,30369,,OK,
+VICTORIAMETRICS,PVC,16Gi,,OK,Bound
+VICTORIAMETRICS,Data Series,0,,WARNING,No metrics data stored yet
+VICTORIAMETRICS,Reachable,Yes,,OK,API responds
+NATS,Server,Running,2/2,OK,
+NATS,Version,2.12.5,,OK,
+NATS,Uptime,1d2h15m,,OK,
+NATS,Connections,3,active,OK,3 nats-consumer pods
+NATS,Messages In,6,total,,Low message volume
+NATS,Messages Out,6,total,,
+NATS,Subscriptions,74,total,,
+NATS,JetStream,Enabled,,OK,
+NATS,JetStream Memory Used,0,bytes,,No stored messages
+NATS,JetStream Storage Used,0,bytes,,No stored messages
+NATS,Slow Consumers,0,,OK,
+NATS,Max Connections,65536,,OK,
+NATS,Max Payload,1,MB,,
+NATS,Memory Usage,18.8,MB,,
+EMQX,Broker,Running,1/1,OK,
+EMQX,Version,5.8.0,,OK,
+EMQX,Status,Started,,OK,
+EMQX,MQTT Port,1883,,OK,
+EMQX,MQTTS Port,8883,,OK,
+EMQX,WebSocket Port,8083,,OK,
+EMQX,WSS Port,8084,,OK,
+EMQX,Dashboard Port,18083,,OK,
+EMQX,External IP,192.168.1.241,,OK,LoadBalancer
+BENTHOS,Server,Running,0/1,WARNING,Container not fully ready
+BENTHOS,Port,4195,,OK,
+NATS CONSUMER,Replicas,3,,OK,
+NATS CONSUMER,All Running,Yes,,OK,
+NATS CONSUMER,Subscriptions,iot.consumer.delivery,,OK,All 3 pods subscribed
+OTEL COLLECTOR,Status,Running,1/1,OK,
+OTEL COLLECTOR,Protocols,6,,OK,6831/UDP,14250/TCP,14268/TCP,4317/TCP,4318/TCP,9411/TCP
+METALLB,Controller,Running,1/1,OK,
+METALLB,Speaker,Running,4/4,OK,
+TRAEFIK,Ingress Controller,Running,1/1,OK,
+TRAEFIK,External IP,192.168.1.240,,OK,LoadBalancer
+TRAEFIK,HTTP Port,80,,OK,
+TRAEFIK,HTTPS Port,443,,OK,
+COREDNS,DNS Server,Running,1/1,OK,
+COREDNS,Cluster IP,10.43.0.10,,OK,
+LOCAL PATH PROVISIONER,Status,Running,1/1,OK,
+METRICS SERVER,Status,Running,1/1,OK,
+OVERALL HEALTH,Cluster Status,DEGRADED,,WARNING,High CPU + terminating pods
+OVERALL,CPU Status,CRITICAL,,91% usage with 15+ load average
+OVERALL,Memory Status,OK,,56% usage with 60% available
+OVERALL,Disk Status,WARNING,,High write volume on SD card
+OVERALL,Network Status,WARNING,,WiFi only - no wired ethernet
+OVERALL,Monitoring Status,DEGRADED,,Prometheus down VictoriaMetrics empty
+OVERALL,Message Queue Status,OK,,NATS and EMQX operational
+OVERALL,GitOps Status,DEGRADED,,ArgoCD repo-server unknown
+OVERALL,Recommendation,URGENT,,Reduce workload or upgrade hardware

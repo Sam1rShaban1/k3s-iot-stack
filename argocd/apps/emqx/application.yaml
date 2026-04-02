@@ -14,7 +14,6 @@ spec:
         replicaCount: 1
         service:
           type: NodePort
-          mqttNodePort: 30295
         resources:
           limits:
             cpu: 500m

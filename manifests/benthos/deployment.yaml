@@ -10,24 +10,22 @@ data:
       enabled: true
     
     input:
-      type: mqtt
-      mqtt:
-        urls:
-          - tcp://emqx.emqx.svc.cluster.local:1883
-        topics:
-          - sensors/#
-        client_id: benthos-consumer
-        qos: 1
-    
-    pipeline:
-      processors: []
-    
-    output:
-      type: nats
-      nats:
-        urls:
-          - nats://nats.nats.svc.cluster.local:4222
-        subject: iot.data
+  mqtt:
+    urls:
+      - tcp://emqx.emqx.svc.cluster.local:1883
+    topics:
+      - sensors/#
+    client_id: benthos-consumer
+    qos: 1
+
+pipeline:
+  processors: []
+
+output:
+  nats:
+    urls:
+      - nats://10.42.0.178:4222
+    subject: iot.data
         
 ---
 apiVersion: apps/v1
