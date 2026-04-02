@@ -9,12 +9,79 @@ spec:
   project: default
   source:
     repoURL: https://charts.longhorn.io
-    targetRevision: 1.6.0
+    targetRevision: 1.7.2
     chart: longhorn
     helm:
       releaseName: longhorn
-      valuesFiles:
-        - ../../files/longhorn-values.yaml
+      values: |
+        defaultSettings:
+          replica-count: 2
+          defaultDataPath: /var/lib/longhorn
+          defaultReplicaCount: 2
+          storageMinimalAvailablePercentage: 10
+          storageOverProvisioningPercentage: 200
+          upgradeChecker: false
+          autoSalvage: true
+          autoDeletePodWhenVolumeDetachedUnexpectedly: true
+          disableSchedulingOnCordonedNode: true
+          nodeDownPodDeletionPolicy: delete-both-statefulset-and-deployment-pods
+          allowRecurringJobWhileVolumeDetached: false
+          replicaSoftAntiAffinity: true
+          replicaZoneSoftAntiAffinity: true
+          kubernetesClusterAutoscalerEnabled: false
+          concurrentReplicaRebuildLimit: 3
+          replicaReplenishmentWaitInterval: 500
+          disableRevisionCounter: true
+          priorityClass: system-cluster-critical
+          taintToleration: true
+          defaultDataLocality: best-effort
+        persistence:
+          defaultClass: true
+          defaultClassReplicaCount: 2
+          reclaimPolicy: Delete
+        resources:
+          manager:
+            requests:
+              cpu: 300m
+              memory: 384Mi
+            limits:
+              cpu: 800m
+              memory: 768Mi
+          driver:
+            requests:
+              cpu: 150m
+              memory: 192Mi
+            limits:
+              cpu: 300m
+              memory: 384Mi
+          ui:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+        nodeSelector:
+          kubernetes.io/arch: arm64
+        tolerations:
+        - key: "arm"
+          operator: "Exists"
+          effect: "NoSchedule"
+        - key: "CriticalAddonsOnly"
+          operator: "Exists"
+          effect: "NoSchedule"
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                    - longhorn-manager
+                topologyKey: kubernetes.io/hostname
   destination:
     server: https://kubernetes.default.svc
     namespace: longhorn-system

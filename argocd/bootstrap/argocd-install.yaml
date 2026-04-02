@@ -8,20 +8,16 @@ spec:
   source:
     repoURL: https://github.com/argoproj/argo-helm
     targetRevision: argo-cd-5.53.0
-    path: charts/argo-cd
+    chart: argo-cd
     helm:
       releaseName: argocd
-      values:
-        server:
-          service:
-            type: LoadBalancer
-            loadBalancerIP: 192.168.1.243
-        configs:
-          params:
-            server.insecure: "true"
-        crds:
-          install: true
-          keep: true
+      parameters:
+      - name: server.service.type
+        value: LoadBalancer
+      - name: server.service.loadBalancerIP
+        value: 192.168.1.243
+      - name: server.configs.params.server.insecure
+        value: "true"
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd

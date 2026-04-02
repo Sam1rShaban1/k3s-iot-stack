@@ -9,7 +9,7 @@ allowVolumeExpansion: true
 reclaimPolicy: Delete
 volumeBindingMode: Immediate
 parameters:
-  numberOfReplicas: "2"           # Pi-friendly, instead of 3
+  numberOfReplicas: "1"           # 2-node cluster, use 1 replica for simplicity
   staleReplicaTimeout: "30"
   dataLocality: "best-effort"
   fromBackup: ""
