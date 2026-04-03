@@ -14,7 +14,23 @@ spec:
       parameters:
       - name: prometheusOperator.admissionWebhooks.enabled
         value: "false"
+      - name: prometheusOperator.admissionWebhooks.certManager.enabled
+        value: "false"
+      - name: prometheusOperator.admissionWebhooks.patch.enabled
+        value: "false"
       - name: alertmanager.enabled
+        value: "false"
+      - name: prometheusOperator.tls.enabled
+        value: "false"
+      - name: prometheusOperator.tlsSecret
+        value: ""
+      - name: grafana.sidecar.dashboards.enabled
+        value: "true"
+      - name: grafana.sidecar.dashboards.label
+        value: grafana_dashboard
+      - name: grafana.sidecar.datasources.enabled
+        value: "true"
+      - name: grafana.sidecar.datasources.defaultDatasourceEnabled
         value: "false"
   destination:
     server: https://kubernetes.default.svc
@@ -23,8 +39,10 @@ spec:
   - group: "*"
     kind: "*"
   syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
     - CreateNamespace=true
     - RespectIgnoreDifferences=true
     - ServerSideApply=true
-    - Prune=false

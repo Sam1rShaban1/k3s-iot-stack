@@ -3,10 +3,6 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": {
-          "type": "grafana",
-          "uid": "-- Grafana --"
-        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -23,10 +19,6 @@
   "liveNow": false,
   "panels": [
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -98,24 +90,24 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "rate(node_cpu_seconds_total{instance=~\".*\"}[5m]) * 100",
           "interval": "",
           "legendFormat": "{{instance}} CPU %",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "CPU Usage by Node",
-      "type": "timeseries"
-    },
-    {
+      "type": "timeseries",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -187,24 +179,24 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "node_memory_MemAvailable_bytes{instance=~\".*\"}",
           "interval": "",
           "legendFormat": "{{instance}} Available Memory",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Memory Usage by Node",
-      "type": "timeseries"
-    },
-    {
+      "type": "timeseries",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -252,24 +244,24 @@
       "pluginVersion": "9.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "node_hwmon_temp_celsius{instance=~\".*\"}",
           "interval": "",
           "legendFormat": "{{instance}} {{chip}} {{sensor}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Pi Temperature",
-      "type": "stat"
-    },
-    {
+      "type": "stat",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -313,18 +305,22 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "kube_pod_info{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring\"}",
           "interval": "",
           "legendFormat": "{{namespace}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Pods by Namespace",
-      "type": "piechart"
+      "type": "piechart",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     }
   ],
   "refresh": "5s",
@@ -345,7 +341,7 @@
   "timepicker": {},
   "timezone": "",
   "title": "Pi Cluster Overview",
-  "uid": "pi-cluster-overview",
+  "uid": "prometheus",
   "version": 1,
   "weekStart": ""
 }

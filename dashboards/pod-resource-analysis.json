@@ -3,10 +3,6 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": {
-          "type": "grafana",
-          "uid": "-- Grafana --"
-        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -23,10 +19,6 @@
   "liveNow": false,
   "panels": [
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -98,24 +90,24 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "container_memory_usage_bytes{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"}",
           "interval": "",
           "legendFormat": "{{namespace}}/{{pod}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Memory Usage by Pod",
-      "type": "timeseries"
-    },
-    {
+      "type": "timeseries",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -187,24 +179,24 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "rate(container_cpu_usage_seconds_total{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"}[5m]) * 100",
           "interval": "",
           "legendFormat": "{{namespace}}/{{pod}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "CPU Usage by Pod",
-      "type": "timeseries"
-    },
-    {
+      "type": "timeseries",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -248,24 +240,24 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "sum by (namespace) (container_memory_usage_bytes{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"})",
           "interval": "",
           "legendFormat": "{{namespace}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Memory Usage by Namespace",
-      "type": "piechart"
-    },
-    {
+      "type": "piechart",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -309,24 +301,24 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "sum by (namespace) (rate(container_cpu_usage_seconds_total{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"}[5m]) * 100)",
           "interval": "",
           "legendFormat": "{{namespace}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "CPU Usage by Namespace",
-      "type": "piechart"
-    },
-    {
+      "type": "piechart",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -398,24 +390,24 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "container_fs_usage_bytes{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"}",
           "interval": "",
           "legendFormat": "{{namespace}}/{{pod}}/{{device}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Filesystem Usage by Pod",
-      "type": "timeseries"
-    },
-    {
+      "type": "timeseries",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -487,34 +479,34 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "container_network_receive_bytes_total{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"}",
           "interval": "",
           "legendFormat": "{{namespace}}/{{pod}} RX",
-          "refId": "A"
-        },
-        {
+          "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
+            "uid": "prometheus"
+          }
+        },
+        {
           "expr": "container_network_transmit_bytes_total{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"}",
           "interval": "",
           "legendFormat": "{{namespace}}/{{pod}} TX",
-          "refId": "B"
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Network I/O by Pod",
-      "type": "timeseries"
-    },
-    {
+      "type": "timeseries",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -586,18 +578,22 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "kube_pod_container_status_restarts_total{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"}",
           "interval": "",
           "legendFormat": "{{namespace}}/{{pod}}/{{container}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Container Restarts",
-      "type": "timeseries"
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     }
   ],
   "refresh": "5s",
@@ -619,7 +615,7 @@
   "timepicker": {},
   "timezone": "",
   "title": "Pod Resource Analysis",
-  "uid": "pod-resource-analysis",
+  "uid": "prometheus",
   "version": 1,
   "weekStart": ""
 }

@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource-victoriametrics
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      uid: prometheus
+      url: http://monitoring-kube-prometheus-prometheus.monitoring:9090/
+      access: proxy
+      isDefault: true
+      jsonData:
+        httpMethod: POST
+        timeInterval: 30s
+    - name: VictoriaMetrics
+      type: prometheus
+      uid: victoriametrics
+      url: http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428
+      access: proxy
+      isDefault: false
+      editable: true

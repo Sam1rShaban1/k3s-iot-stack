@@ -3,10 +3,6 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": {
-          "type": "grafana",
-          "uid": "-- Grafana --"
-        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -23,10 +19,6 @@
   "liveNow": false,
   "panels": [
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -98,24 +90,24 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "kubelet_volume_stats_used_bytes{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"}",
           "interval": "",
           "legendFormat": "{{namespace}}/{{persistentvolumeclaim}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "PVC Usage",
-      "type": "timeseries"
-    },
-    {
+      "type": "timeseries",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -187,24 +179,24 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "(kubelet_volume_stats_used_bytes{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"} / kubelet_volume_stats_capacity_bytes{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"}) * 100",
           "interval": "",
           "legendFormat": "{{namespace}}/{{persistentvolumeclaim}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "PVC Usage Percentage",
-      "type": "timeseries"
-    },
-    {
+      "type": "timeseries",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -256,24 +248,24 @@
       "pluginVersion": "9.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "avg((kubelet_volume_stats_used_bytes{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"} / kubelet_volume_stats_capacity_bytes{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"}) * 100)",
           "interval": "",
           "legendFormat": "Average PVC Usage",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Average PVC Usage",
-      "type": "stat"
-    },
-    {
+      "type": "stat",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -325,24 +317,24 @@
       "pluginVersion": "9.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "sum(kube_persistentvolumeclaim_info{storageclass=\"longhorn\"})",
           "interval": "",
           "legendFormat": "Total PVCs",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Total PVC Count",
-      "type": "stat"
-    },
-    {
+      "type": "stat",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -386,24 +378,24 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "sum by (namespace) (kubelet_volume_stats_capacity_bytes{namespace=~\"emqx|benthos|nats|victoriametrics|monitoring|logging\"})",
           "interval": "",
           "legendFormat": "{{namespace}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Storage Capacity by Namespace",
-      "type": "piechart"
-    },
-    {
+      "type": "piechart",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -475,24 +467,24 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "node_filesystem_avail_bytes{mountpoint=\"/var/lib/longhorn\"}",
           "interval": "",
           "legendFormat": "{{instance}} {{mountpoint}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Node Filesystem Available",
-      "type": "timeseries"
-    },
-    {
+      "type": "timeseries",
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+        "uid": "prometheus"
+      }
+    },
+    {
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -564,28 +556,32 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
           "expr": "rate(node_disk_reads_completed_total{device=~\"mmcblk.*|sd.*\"}[5m])",
           "interval": "",
           "legendFormat": "{{instance}} {{device}} reads",
-          "refId": "A"
-        },
-        {
+          "refId": "A",
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
+            "uid": "prometheus"
+          }
+        },
+        {
           "expr": "rate(node_disk_writes_completed_total{device=~\"mmcblk.*|sd.*\"}[5m])",
           "interval": "",
           "legendFormat": "{{instance}} {{device}} writes",
-          "refId": "B"
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "title": "Disk I/O Operations",
-      "type": "timeseries"
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     }
   ],
   "refresh": "5s",
@@ -607,7 +603,7 @@
   "timepicker": {},
   "timezone": "",
   "title": "Storage Health",
-  "uid": "storage-health",
+  "uid": "prometheus",
   "version": 1,
   "weekStart": ""
 }

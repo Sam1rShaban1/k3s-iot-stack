@@ -20,78 +20,7 @@ spec:
         args:
           - |
             pip install --no-cache-dir nats-py requests &&
-            python3 -u -c '
-            import asyncio
-            import json
-            import time
-            import os
-            import requests
-            from nats.aio.client import Client as NATS
-
-            NATS_URL = os.getenv("NATS_URL", "nats://nats.nats.svc.cluster.local:4222")
-            VM_URL = os.getenv("VICTORIA_METRICS_URL", "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/import/prometheus")
-            STREAM = "IOT_DATA"
-            SUBJECT = "iot.data"
-            CONSUMER_PUSH = "metrics-consumer-push"
-            DELIVERY_SUBJECT = "iot.consumer.delivery"
-
-            async def setup():
-                nc = NATS()
-                await nc.connect(NATS_URL)
-                js = nc.jetstream()
-                for i in range(10):
-                    try:
-                        await js.add_stream(name=STREAM, subjects=[SUBJECT])
-                        print("Stream: " + STREAM)
-                        break
-                    except Exception as e:
-                        print(f"Stream attempt {i+1} failed: {e}")
-                        await asyncio.sleep(1)
-                return nc, js
-
-            def send_vm(data):
-                try:
-                    vm_entry_ts = int(time.time() * 1000)
-                    data["nats_exit_ts"] = vm_entry_ts
-                    if "benthos_entry_ts" in data:
-                        data["benthos_to_nats_latency_ms"] = vm_entry_ts - data["benthos_entry_ts"]
-                    
-                    metrics = []
-                    for k, v in data.items():
-                        if isinstance(v, (int, float)):
-                            device = data.get("device_id", "unknown")
-                            metrics.append("iot_sensor_{key}{{device_id=\"{dev}\"}} {val}".format(key=k, dev=device, val=v))
-                    
-                    if metrics:
-                        resp = requests.post(VM_URL, data="\n".join(metrics), 
-                                           headers={"Content-Type": "text/plain"}, timeout=5)
-                        if resp.status_code in [200, 204]:
-                            print("VM: sent " + str(len(metrics)) + " for " + str(data.get("device_id", "unknown")))
-                        else:
-                            print("VM error: " + str(resp.status_code))
-                except Exception as e:
-                    print("VM error: " + str(e))
-
-            async def h(msg):
-                try:
-                    d = json.loads(msg.data.decode())
-                    print("MSG: " + str(d.get("device_id")))
-                    send_vm(d)
-                    await msg.ack()
-                except Exception as e:
-                    print("Err: " + str(e))
-                    await msg.nak()
-            
-            async def main():
-                print("Starting NATS consumer...")
-                nc, js = await setup()
-                print("Subscribing to " + SUBJECT)
-                sub = await js.subscribe(subject=SUBJECT, stream=STREAM, durable=CONSUMER_PUSH)
-                async for msg in sub.messages:
-                    await h(msg)
-
-            asyncio.run(main())
-            '
+            python3 -u /opt/consumer/consumer.py
         env:
         - name: NATS_URL
           value: "nats://nats.nats.svc.cluster.local:4222"
@@ -99,6 +28,13 @@ spec:
           value: "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/import/prometheus"
         - name: PYTHONUNBUFFERED
           value: "1"
+        volumeMounts:
+        - name: consumer-script
+          mountPath: /opt/consumer
+      volumes:
+      - name: consumer-script
+        configMap:
+          name: nats-consumer-script
       nodeSelector:
         kubernetes.io/arch: arm64
       tolerations:

@@ -1,657 +1,84 @@
 {
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": {
-          "type": "grafana",
-          "uid": "-- Grafana --"
-        },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "type": "dashboard"
-      }
-    ]
-  },
+  "annotations": {"list": []},
   "editable": true,
-  "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": null,
-  "links": [],
-  "liveNow": false,
   "panels": [
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "vis": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "line"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 100
-              },
-              {
-                "color": "red",
-                "value": 500
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 0
-      },
+      "datasource": {"type": "prometheus", "uid": "victoriametrics"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
       "id": 1,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-          },
-          "expr": "iot_sensor_end_to_end_latency_ms",
-          "interval": "",
-          "legendFormat": "95th percentile latency",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-          },
-          "expr": "iot_sensor_temp",
-          "interval": "",
-          "legendFormat": "50th percentile latency",
-          "refId": "B"
-        }
-      ],
-      "title": "End-to-End Latency",
-      "type": "timeseries"
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
+      "title": "End-to-End Latency (ms)",
+      "type": "timeseries",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "iot_sensor_nats_exit_ts / 1000 - iot_sensor_ts / 1000", "refId": "A"}]
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "vis": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
+      "datasource": {"type": "prometheus", "uid": "victoriametrics"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "id": 2,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-          },
-          "expr": "iot_sensor_ts",
-          "interval": "",
-          "legendFormat": "Sensor Timestamp",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-          },
-          "expr": "iot_sensor_nats_exit_ts",
-          "interval": "",
-          "legendFormat": "NATS Exit Timestamp",
-          "refId": "B"
-        }
-      ],
-      "title": "Message Timestamps",
-      "type": "timeseries"
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
+      "title": "Temperature (C)",
+      "type": "timeseries",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "iot_sensor_temp", "refId": "A"}]
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "vis": false
-            }
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 0,
-        "y": 8
-      },
+      "datasource": {"type": "prometheus", "uid": "victoriametrics"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "id": 3,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "pieType": "pie",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-          },
-          "expr": "count(iot_sensor_temp)",
-          "interval": "",
-          "legendFormat": "Active Sensors",
-          "refId": "A"
-        }
-      ],
-      "title": "Active Sensors",
-      "type": "piechart"
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
+      "title": "Humidity (%)",
+      "type": "timeseries",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "iot_sensor_hum", "refId": "A"}]
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1000
-              },
-              {
-                "color": "red",
-                "value": 5000
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 6,
-        "y": 8
-      },
+      "datasource": {"type": "prometheus", "uid": "victoriametrics"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 16},
       "id": 4,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "9.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-          },
-          "expr": "iot_sensor_pm25",
-          "interval": "",
-          "legendFormat": "PM2.5 {{device_id}}",
-          "refId": "A"
-        }
-      ],
-      "title": "PM2.5 Levels",
-      "type": "stat"
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
+      "title": "PM1 (ug/m3)",
+      "type": "timeseries",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "iot_sensor_pm1", "refId": "A"}]
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "vis": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 8
-      },
+      "datasource": {"type": "prometheus", "uid": "victoriametrics"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 16},
       "id": 5,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-          },
-          "expr": "iot_sensor_temp",
-          "interval": "",
-          "legendFormat": "Temperature {{device_id}}",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-          },
-          "expr": "iot_sensor_hum",
-          "interval": "",
-          "legendFormat": "Humidity {{device_id}}",
-          "refId": "B"
-        }
-      ],
-      "title": "Temperature & Humidity",
-      "type": "timeseries"
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
+      "title": "PM2.5 (ug/m3)",
+      "type": "timeseries",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "iot_sensor_pm25", "refId": "A"}]
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "vis": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 16
-      },
+      "datasource": {"type": "prometheus", "uid": "victoriametrics"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 16},
       "id": 6,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-          },
-          "expr": "iot_sensor_end_to_end_latency_ms",
-          "interval": "",
-          "legendFormat": "Latency {{device_id}}",
-          "refId": "A"
-        }
-      ],
-      "title": "End-to-End Latency",
-      "type": "timeseries"
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
+      "title": "PM10 (ug/m3)",
+      "type": "timeseries",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "iot_sensor_pm10", "refId": "A"}]
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "vis": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 16
-      },
+      "datasource": {"type": "prometheus", "uid": "victoriametrics"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
       "id": 7,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "b9c9671a-a353-449f-88a5-9835f9f2a176"
-          },
-          "expr": "iot_sensor_pm10",
-          "interval": "",
-          "legendFormat": "PM10 {{device_id}}",
-          "refId": "A"
-        }
-      ],
-      "title": "PM10 Levels",
-      "type": "timeseries"
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
+      "title": "Messages per Second",
+      "type": "timeseries",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "count(iot_sensor_ts)", "refId": "A"}]
     }
   ],
-  "refresh": "5s",
-  "schemaVersion": 36,
-  "style": "dark",
-  "tags": [
-    "iot",
-    "pipeline",
-    "metrics",
-    "performance"
-  ],
-  "templating": {
-    "list": []
-  },
-  "time": {
-    "from": "now-1h",
-    "to": "now"
-  },
-  "timepicker": {},
-  "timezone": "",
+  "schemaVersion": 39,
+  "tags": ["iot"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
   "title": "IoT Pipeline Comprehensive",
   "uid": "iot-pipeline-comprehensive",
-  "version": 1,
-  "weekStart": ""
+  "version": 1
 }

@@ -15,15 +15,23 @@ spec:
       releaseName: nats
       values: |
         replicaCount: 1
-        jetstream:
-          enabled: true
-          fileStore:
+        config:
+          cluster:
+            enabled: false
+          jetstream:
             enabled: true
-            storageClass: local-path
-            storageSize: 2Gi
-          memoryStore:
+            fileStore:
+              enabled: true
+              pvc:
+                enabled: true
+                storageClassName: longhorn
+                size: 2Gi
+            memoryStore:
+              enabled: true
+              maxSize: 128Mi
+          mqtt:
             enabled: true
-            maxSize: 512Mi
+            port: 1883
         resources:
           requests:
             cpu: 200m
@@ -31,25 +39,8 @@ spec:
           limits:
             cpu: 500m
             memory: 512Mi
-        nats:
-          image: nats:2.10.15-alpine
-          cluster:
-            enabled: false
-          mqtt:
-            enabled: true
-            port: 1883
-          config:
-            jetstream:
-              enabled: true
-              maxMem: 128MB
-              maxFile: 1GB
-              storeDir: /data/jetstream
         service:
           type: ClusterIP
-        persistence:
-          enabled: true
-          storageClass: local-path
-          size: 2Gi
         nodeSelector:
           kubernetes.io/arch: arm64
         tolerations:

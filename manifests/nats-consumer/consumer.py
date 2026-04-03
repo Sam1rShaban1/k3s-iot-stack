@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""
+NATS Consumer - Batches messages and writes to VictoriaMetrics with unique message IDs
+"""
+
+import asyncio
+import json
+import time
+import os
+import requests
+from nats.aio.client import Client as NATS
+
+NATS_URL = os.getenv("NATS_URL", "nats://nats.nats.svc.cluster.local:4222")
+VM_URL = os.getenv(
+    "VICTORIA_METRICS_URL",
+    "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/import/prometheus",
+)
+STREAM = "IOT_DATA"
+SUBJECT = "iot.data"
+CONSUMER_PUSH = "metrics-consumer-push"
+BATCH_SIZE = 100
+BATCH_TIMEOUT = 1.0  # seconds
+
+message_buffer = []
+msg_count = 0
+
+
+async def setup():
+    nc = NATS()
+    await nc.connect(NATS_URL)
+    js = nc.jetstream()
+    for i in range(10):
+        try:
+            await js.add_stream(name=STREAM, subjects=[SUBJECT])
+            print("Stream: " + STREAM)
+            break
+        except Exception as e:
+            print(f"Stream attempt {i + 1} failed: {e}")
+            await asyncio.sleep(1)
+    return nc, js
+
+
+def send_vm_batch(batch):
+    """Send a batch of metrics to VictoriaMetrics with unique message IDs"""
+    global msg_count
+    if not batch:
+        return
+
+    metrics = []
+    for data in batch:
+        vm_entry_ts = int(time.time() * 1000)
+        data["nats_exit_ts"] = vm_entry_ts
+        if "benthos_entry_ts" in data:
+            data["benthos_to_nats_latency_ms"] = vm_entry_ts - data["benthos_entry_ts"]
+
+        device = data.get("device_id", "unknown")
+        # Add unique message ID to ensure each data point is stored separately
+        msg_id = f"m{msg_count}"
+        msg_count += 1
+
+        # Create metrics with unique msg_id as part of metric name to avoid deduplication
+        for k, v in data.items():
+            if isinstance(v, (int, float)):
+                # Use msg_id as part of metric name to ensure uniqueness
+                metrics.append(
+                    f'iot_sensor_{k}{{device_id="{device}",msg_id="{msg_id}"}} {v}'
+                )
+
+    try:
+        resp = requests.post(
+            VM_URL,
+            data="\n".join(metrics),
+            headers={"Content-Type": "text/plain"},
+            timeout=10,
+        )
+        if resp.status_code in [200, 204]:
+            print(f"VM: sent batch of {len(batch)} messages ({len(metrics)} metrics)")
+        else:
+            print(f"VM error: {resp.status_code} - {resp.text[:200]}")
+    except Exception as e:
+        print(f"VM error: {e}")
+
+
+async def h(msg, batch_queue):
+    """Handle individual message - add to batch queue"""
+    try:
+        d = json.loads(msg.data.decode())
+        batch_queue.append(d)
+        await msg.ack()
+    except Exception as e:
+        print(f"Err: {e}")
+        await msg.nak()
+
+
+async def batch_sender(batch_queue):
+    """Periodically send batches to VictoriaMetrics"""
+    while True:
+        await asyncio.sleep(BATCH_TIMEOUT)
+        if batch_queue:
+            batch = batch_queue[:BATCH_SIZE]
+            del batch_queue[:BATCH_SIZE]
+            send_vm_batch(batch)
+
+
+async def main():
+    print("Starting NATS consumer (batch mode)...")
+    nc, js = await setup()
+    print("Subscribing to " + SUBJECT)
+    sub = await js.subscribe(subject=SUBJECT, stream=STREAM, durable=CONSUMER_PUSH)
+
+    batch_queue = []
+
+    # Start batch sender task
+    asyncio.create_task(batch_sender(batch_queue))
+
+    async for msg in sub.messages:
+        await h(msg, batch_queue)
+
+
+asyncio.run(main())

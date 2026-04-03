@@ -9,58 +9,58 @@
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
       "id": 1,
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
-      "title": "IoT Messages by Device",
+      "title": "Temperature (C)",
       "type": "timeseries",
-      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "count(iot_sensor_ts) by (device_id)", "refId": "A"}]
+      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "iot_sensor_temp", "refId": "A"}]
     },
     {
       "datasource": {"type": "prometheus", "uid": "victoriametrics"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
       "id": 2,
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
-      "title": "Average Temperature by Device",
+      "title": "Humidity (%)",
       "type": "timeseries",
-      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "avg(iot_sensor_temp) by (device_id)", "refId": "A"}]
+      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "iot_sensor_hum", "refId": "A"}]
     },
     {
       "datasource": {"type": "prometheus", "uid": "victoriametrics"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
       "id": 3,
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
-      "title": "Average Humidity by Device",
+      "title": "PM1 (ug/m3)",
       "type": "timeseries",
-      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "avg(iot_sensor_hum) by (device_id)", "refId": "A"}]
+      "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "iot_sensor_pm1", "refId": "A"}]
     },
     {
       "datasource": {"type": "prometheus", "uid": "victoriametrics"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 16},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
       "id": 4,
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
-      "title": "PM2.5 by Device",
+      "title": "PM2.5 (ug/m3)",
       "type": "timeseries",
       "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "iot_sensor_pm25", "refId": "A"}]
     },
     {
       "datasource": {"type": "prometheus", "uid": "victoriametrics"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 16},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 32},
       "id": 5,
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
-      "title": "PM10 by Device",
+      "title": "PM10 (ug/m3)",
       "type": "timeseries",
       "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "iot_sensor_pm10", "refId": "A"}]
     },
     {
       "datasource": {"type": "prometheus", "uid": "victoriametrics"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 16},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 40},
       "id": 6,
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
-      "title": "Total Messages",
-      "type": "stat",
+      "title": "Messages per Second",
+      "type": "timeseries",
       "targets": [{"datasource": {"type": "prometheus", "uid": "victoriametrics"}, "expr": "count(iot_sensor_ts)", "refId": "A"}]
     }
   ],
@@ -68,7 +68,7 @@
   "tags": ["iot"],
   "templating": {"list": []},
   "time": {"from": "now-1h", "to": "now"},
-  "title": "IoT Device Analysis",
-  "uid": "logs-analysis",
+  "title": "IoT Sensor Data",
+  "uid": "iot-sensor-data",
   "version": 1
 }
