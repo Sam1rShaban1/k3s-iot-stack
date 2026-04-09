@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats-consumer
+  namespace: nats-consumer
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nats-consumer
+  template:
+    metadata:
+      labels:
+        app: nats-consumer
+    spec:
+      initContainers:
+        - name: download
+          image: alpine:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              apk add --no-cache curl gzip &&
+              curl -sL http://10.0.0.1:8080/consumer.gz -o /tmp/consumer.gz &&
+              gunzip -f /tmp/consumer.gz &&
+              chmod +x /tmp/consumer
+          volumeMounts:
+            - name: consumer-dir
+              mountPath: /tmp
+      containers:
+        - name: nats-consumer
+          image: alpine:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              apk add --no-cache curl
+              /tmp/consumer
+          env:
+            - name: NATS_URL
+              value: "nats://nats.nats.svc.cluster.local:4222"
+            - name: VICTORIA_METRICS_URL
+              value: "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/import/prometheus"
+            - name: BATCH_SIZE
+              value: "5000"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 256Mi
+            limits:
+              cpu: 2000m
+              memory: 512Mi
+          volumeMounts:
+            - name: consumer-dir
+              mountPath: /tmp
+      volumes:
+        - name: consumer-dir
+          emptyDir: {}
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      tolerations:
+        - key: "arm"
+          operator: "Exists"
+          effect: "NoSchedule"

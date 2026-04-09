@@ -14,30 +14,43 @@ spec:
         app: nats-consumer
     spec:
       containers:
-      - name: nats-consumer
-        image: python:3.11-slim
-        command: ["sh", "-c"]
-        args:
-          - |
-            pip install --no-cache-dir nats-py requests &&
-            python3 -u /opt/consumer/consumer.py
-        env:
-        - name: NATS_URL
-          value: "nats://nats.nats.svc.cluster.local:4222"
-        - name: VICTORIA_METRICS_URL
-          value: "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/import/prometheus"
-        - name: PYTHONUNBUFFERED
-          value: "1"
-        volumeMounts:
-        - name: consumer-script
-          mountPath: /opt/consumer
+        - name: nats-consumer
+          image: python:3.11-slim
+          command: ["sh", "-c"]
+          args:
+            - |
+              pip install --no-cache-dir aiohttp nats-py &&
+              python3 -u /opt/consumer/consumer.py
+          env:
+            - name: NATS_URL
+              value: "nats://nats.nats.svc.cluster.local:4222"
+            - name: VICTORIA_METRICS_URL
+              value: "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/import/prometheus"
+            - name: BATCH_SIZE
+              value: "5000"
+            - name: BATCH_TIMEOUT
+              value: "0.02"
+            - name: MAX_CONCURRENT_SENDS
+              value: "32"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 256Mi
+            limits:
+              cpu: 2000m
+              memory: 512Mi
+          volumeMounts:
+            - name: consumer-script
+              mountPath: /opt/consumer
       volumes:
-      - name: consumer-script
-        configMap:
-          name: nats-consumer-script
+        - name: consumer-script
+          configMap:
+            name: nats-consumer-script
       nodeSelector:
         kubernetes.io/arch: arm64
       tolerations:
-      - key: "arm"
-        operator: "Exists"
-        effect: "NoSchedule"
+        - key: "arm"
+          operator: "Exists"
+          effect: "NoSchedule"

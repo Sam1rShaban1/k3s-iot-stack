@@ -16,7 +16,7 @@ data:
         topics:
           - sensors/#
         client_id: benthos-consumer
-        qos: 1
+        qos: 2
 
     pipeline:
       processors: []
@@ -24,8 +24,9 @@ data:
     output:
       nats:
         urls:
-          - nats://nats.nats.svc.cluster.local:4222
+          - nats://10.42.0.176:4222
         subject: iot.data
+        max_in_flight: 500
         
 ---
 apiVersion: apps/v1
@@ -34,7 +35,7 @@ metadata:
   name: benthos
   namespace: benthos
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: benthos
@@ -67,15 +68,22 @@ spec:
           periodSeconds: 5
         resources:
           requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
             cpu: 500m
             memory: 256Mi
+          limits:
+            cpu: 2000m
+            memory: 512Mi
       volumes:
       - name: config
         configMap:
           name: benthos-config
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: benthos
+            topologyKey: kubernetes.io/hostname
       nodeSelector:
         kubernetes.io/arch: arm64
       tolerations:

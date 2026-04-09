@@ -2,6 +2,59 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: nats-consumer-network-policy
+  namespace: nats-consumer
+spec:
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: nats
+  egress:
+    - to:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: victoriametrics
+      ports:
+        - protocol: TCP
+          port: 8428
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: nats
+      ports:
+        - protocol: TCP
+          port: 4222
+    - to:
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: emqx-network-policy
   namespace: emqx
 spec:
@@ -104,6 +157,169 @@ spec:
         - protocol: TCP
           port: 4195
   egress:
+    - to:
+        - podSelector:
+            matchLabels: {}
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: nats
+      ports:
+        - protocol: TCP
+          port: 4222
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: victoriametrics
+      ports:
+        - protocol: TCP
+          port: 8428
+    - to:
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: emqx-network-policy
+  namespace: emqx
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: emqx
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: logging
+        - namespaceSelector:
+            matchLabels:
+              name: benthos
+      ports:
+        - protocol: TCP
+          port: 1883
+        - protocol: TCP
+          port: 8083
+        - protocol: TCP
+          port: 18083
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {}
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: benthos
+      ports:
+        - protocol: TCP
+          port: 1883
+    - to:
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nats-network-policy
+  namespace: nats
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nats
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: benthos
+        - namespaceSelector:
+            matchLabels:
+              name: nats-consumer
+        - namespaceSelector:
+            matchLabels:
+              name: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4222
+        - protocol: TCP
+          port: 6222
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {}
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+    - to:
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: benthos-network-policy
+  namespace: benthos
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: benthos
+      app: benthos
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: emqx
+      ports:
+        - protocol: TCP
+          port: 4195
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {}
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
     - to:
         - namespaceSelector:
             matchLabels:

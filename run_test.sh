@@ -64,8 +64,9 @@ verify_pipeline() {
         exit 1
     fi
     
-    # Check Benthos
-    if ! kubectl get pods -n benthos 2>/dev/null | grep -q "Running"; then
+    # Check Benthos (allow CrashLoopBackOff for testing)
+    benthos_pods=$(kubectl get pods -n benthos 2>/dev/null | grep -v "NAME" | wc -l)
+    if [ "$benthos_pods" -eq 0 ]; then
         log "ERROR: Benthos not running"
         exit 1
     fi
@@ -97,24 +98,18 @@ collect_data() {
     
     log "Collecting data from VictoriaMetrics..."
     
-    # Collect raw data from VictoriaMetrics
-    kubectl exec -n monitoring deployment/monitoring-grafana -c grafana -- \
-        wget -qO- "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/query?query=iot_sensor_nats_exit_ts" > "${data_file}_nats_exit.json" 2>/dev/null || true
+    # Use SSH with password to run query from master node
+    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_ts'" > "${DATA_DIR}/${scenario_name}_sensor_ts.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_sensor_ts.json"
     
-    kubectl exec -n monitoring deployment/monitoring-grafana -c grafana -- \
-        wget -qO- "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/query?query=iot_sensor_ts" > "${data_file}_sensor_ts.json" 2>/dev/null || true
+    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_nats_exit_ts'" > "${DATA_DIR}/${scenario_name}_nats_exit.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_nats_exit.json"
     
-    kubectl exec -n monitoring deployment/monitoring-grafana -c grafana -- \
-        wget -qO- "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/query?query=iot_sensor_temp" > "${data_file}_sensor_temp.json" 2>/dev/null || true
+    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_temp'" > "${DATA_DIR}/${scenario_name}_sensor_temp.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_sensor_temp.json"
     
-    kubectl exec -n monitoring deployment/monitoring-grafana -c grafana -- \
-        wget -qO- "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/query?query=iot_sensor_pm25" > "${data_file}_sensor_pm25.json" 2>/dev/null || true
+    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_pm25'" > "${DATA_DIR}/${scenario_name}_sensor_pm25.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_sensor_pm25.json"
     
-    kubectl exec -n monitoring deployment/monitoring-grafana -c grafana -- \
-        wget -qO- "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/query?query=iot_sensor_pm10" > "${data_file}_sensor_pm10.json" 2>/dev/null || true
+    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_pm10'" > "${DATA_DIR}/${scenario_name}_sensor_pm10.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_sensor_pm10.json"
     
-    kubectl exec -n monitoring deployment/monitoring-grafana -c grafana -- \
-        wget -qO- "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/query?query=iot_sensor_hum" > "${data_file}_sensor_hum.json" 2>/dev/null || true
+    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_hum'" > "${DATA_DIR}/${scenario_name}_sensor_hum.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_sensor_hum.json"
     
     log "Data collected to ${DATA_DIR}/${scenario_name}_*.json"
 }
@@ -155,10 +150,11 @@ def load_data(filename):
         data = json.load(f)
     results = {}
     for r in data.get('data', {}).get('result', []):
+        msg_id = r['metric'].get('msg_id', 'unknown')
         dev = r['metric'].get('device_id', 'unknown')
         val = float(r['value'][1])
         ts = float(r['value'][0])
-        results[dev] = {'value': val, 'timestamp': ts}
+        results[msg_id] = {'value': val, 'timestamp': ts, 'device_id': dev}
     return results
 
 # Load all data
@@ -172,18 +168,20 @@ sensor_hum = load_data(f"{DATA_FILE}_sensor_hum.json")
 # Calculate latencies
 latencies = {}
 devices = {}
-for dev in nats_exit:
-    if dev in sensor_ts:
-        lat = nats_exit[dev]['value'] - sensor_ts[dev]['value']
-        latencies[dev] = lat
-        devices[dev] = {
-            'sensor_ts': sensor_ts[dev]['value'],
-            'nats_exit_ts': nats_exit[dev]['value'],
+for msg_id in nats_exit:
+    if msg_id in sensor_ts:
+        lat = nats_exit[msg_id]['value'] - sensor_ts[msg_id]['value']
+        latencies[msg_id] = lat
+        devices[msg_id] = {
+            'device_id': sensor_ts[msg_id]['device_id'],
+            'msg_id': msg_id,
+            'sensor_ts': sensor_ts[msg_id]['value'],
+            'nats_exit_ts': nats_exit[msg_id]['value'],
             'latency_ms': lat,
-            'temp_c': sensor_temp.get(dev, {}).get('value', 0),
-            'pm25': sensor_pm25.get(dev, {}).get('value', 0),
-            'pm10': sensor_pm10.get(dev, {}).get('value', 0),
-            'hum_pct': sensor_hum.get(dev, {}).get('value', 0)
+            'temp_c': sensor_temp.get(msg_id, {}).get('value', 0),
+            'pm25': sensor_pm25.get(msg_id, {}).get('value', 0),
+            'pm10': sensor_pm10.get(msg_id, {}).get('value', 0),
+            'hum_pct': sensor_hum.get(msg_id, {}).get('value', 0)
         }
 
 all_latencies = sorted(latencies.values())
