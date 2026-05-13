@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: emqx
+  namespace: emqx
+  labels:
+    app: emqx
+spec:
+  containers:
+  - env:
+    - name: EMQX_NODE__NAME
+      value: emqx@127.0.0.1
+    - name: EMQX_CLUSTER__DISCOVERY_STRATEGY
+      value: manual
+    - name: EMQX_LISTENERS__TCP__DEFAULT__MAX_CONN_RATE
+      value: "1000"
+    - name: EMQX_LISTENERS__TCP__DEFAULT__MAX_CONNECTIONS
+      value: "50000"
+    - name: EMQX_AUTHORIZATION__NO_MATCH
+      value: allow
+    - name: EMQX_AUTHORIZATION__SOURCES
+      value: "[]"
+    image: emqx/emqx:5.8.0
+    name: emqx
+    ports:
+    - containerPort: 1883
+      hostPort: 1883
+      protocol: TCP
+    - containerPort: 8883
+      hostPort: 8883
+      protocol: TCP
+    - containerPort: 8083
+      hostPort: 8083
+      protocol: TCP
+    - containerPort: 8084
+      hostPort: 8084
+      protocol: TCP
+    - containerPort: 18083
+      hostPort: 18083
+      protocol: TCP
+    resources:
+      limits:
+        cpu: "1"
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+  dnsPolicy: ClusterFirstWithHostNet
+  hostNetwork: true
+  nodeName: raspberrypi

@@ -10,7 +10,7 @@ resources:
 
 persistence:
   enabled: true
-  storageClass: longhorn
+  storageClass: local-path
   size: 20Gi
 
 service:
@@ -31,11 +31,11 @@ extraArgs:
   - --search.maxUniqueTimeseries=2000000
   - --search.maxSeriesPerQuery=200000
   - --search.maxQueryLen=32000
-  - --search.maxConcurrentRequests=200
+  - --search.maxConcurrentRequests=50
   - --search.maxPointsPerTimeseries=50000
   # Performance optimizations for Pi4
-  - --search.maxConcurrentSelectRequests=50
-  - --search.maxConcurrentInsertRequests=50
+  - --search.maxConcurrentSelectRequests=20
+  - --search.maxConcurrentInsertRequests=20
   - --search.maxDailySeriesExemplars=100000
   - --search.maxSeriesPerMetric=100000
   - --search.maxTagsPerTimeseries=100

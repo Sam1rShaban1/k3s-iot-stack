@@ -28,10 +28,12 @@ int main(int argc, char *argv[]) {
   int delay_us = atoi(argv[4]);
   char *topic = argv[5];
 
-  // Create unique Client ID using PID to allow high concurrency
+  // Create unique Client ID using PID + nanosecond timestamp to allow high concurrency
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
   int pid = (int)getpid();
   char final_client_id[64];
-  sprintf(final_client_id, "%s_%d", base_id, pid);
+  snprintf(final_client_id, sizeof(final_client_id), "%s_%d_%ld", base_id, pid, ts.tv_nsec);
 
   // Setup MQTT Connection
   char broker_address[128];
@@ -59,7 +61,10 @@ int main(int argc, char *argv[]) {
   }
 
   // Seed random number generator with time + pid for unique data streams
-  srand(time(NULL) + pid);
+  srand(time(NULL) + pid + ts.tv_nsec);
+  
+  // Add small random delay (0-100ms) to stagger connections
+  usleep(rand() % 100000);
 
   printf("Client [%s] connected to %s. Publishing to %s...\n", final_client_id,
          broker_address, topic);
@@ -94,7 +99,7 @@ int main(int argc, char *argv[]) {
 
     pubmsg.payload = payload;
     pubmsg.payloadlen = (int)strlen(payload);
-    pubmsg.qos = 2; // QoS 2 for guaranteed delivery in benchmarks
+    pubmsg.qos = 0; // QoS 0 for maximum speed (non-blocking)
     pubmsg.retained = 0;
 
     // 4. Publish

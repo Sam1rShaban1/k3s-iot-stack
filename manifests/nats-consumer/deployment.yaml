@@ -15,12 +15,9 @@ spec:
     spec:
       containers:
         - name: nats-consumer
-          image: python:3.11-slim
-          command: ["sh", "-c"]
-          args:
-            - |
-              pip install --no-cache-dir aiohttp nats-py &&
-              python3 -u /opt/consumer/consumer.py
+          image: nats-consumer-python:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "-u", "/opt/consumer/consumer.py"]
           env:
             - name: NATS_URL
               value: "nats://nats.nats.svc.cluster.local:4222"

@@ -1,0 +1,4 @@
+FROM python:3.11-slim
+RUN pip install --no-cache-dir aiohttp nats-py
+COPY consumer.py /opt/consumer/consumer.py
+CMD ["python3", "-u", "/opt/consumer/consumer.py"]

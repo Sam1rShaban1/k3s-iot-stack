@@ -8,10 +8,10 @@ service:
 
 resources:
   requests:
-    cpu: 300m
+    cpu: 200m
     memory: 256Mi
   limits:
-    cpu: 600m
+    cpu: 1000m
     memory: 512Mi
 
 persistence:
@@ -93,6 +93,13 @@ nodeSelector:
   kubernetes.io/arch: arm64
 
 affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      preference:
+        matchExpressions:
+        - key: node-role.kubernetes.io/control-plane
+          operator: DoesNotExist
   podAntiAffinity:
     requiredDuringSchedulingIgnoredDuringExecution:
     - weight: 100

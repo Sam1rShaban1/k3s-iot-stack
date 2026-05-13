@@ -1,5 +1,5 @@
 # NATS JetStream consumer for timestamping and VictoriaMetrics ingestion
-replicaCount: 1
+replicaCount: 3
 
 # Consumer configuration
 config:
@@ -52,7 +52,7 @@ config:
 
 resources:
   requests:
-    cpu: 200m
+    cpu: 150m
     memory: 256Mi
   limits:
     cpu: 500m

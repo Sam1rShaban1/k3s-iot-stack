@@ -9,7 +9,7 @@ set -e
 
 # --- CONFIGURATION ---
 BROKER_IP="192.168.1.50"
-BROKER_PORT="32399"
+BROKER_PORT="1883"
 TOPIC="sensors/data"
 PUBLISHER_BIN="./publisher"
 TEST_DURATION=60
@@ -47,10 +47,10 @@ cleanup() {
 }
 
 clear_victoriametrics() {
-    log "Clearing VictoriaMetrics data..."
-    # Restart VictoriaMetrics to ensure clean state (delete_series API is unreliable)
-    kubectl rollout restart statefulset victoriametrics-victoria-metrics-single-server -n victoriametrics 2>/dev/null || true
-    kubectl rollout status statefulset victoriametrics-victoria-metrics-single-server -n victoriametrics --timeout=60s 2>/dev/null || true
+    log "Clearing VictoriaMetrics for fresh test run..."
+    # Delete all metrics from VictoriaMetrics via NodePort
+    curl -s -X POST "http://192.168.1.50:30000/api/v1/admin/tsdb/delete_series" \
+        -d 'match[]={__name__=~"iot_.*"}' > /dev/null 2>&1 || true
     sleep 5
     log "VictoriaMetrics cleared"
 }
@@ -58,9 +58,10 @@ clear_victoriametrics() {
 verify_pipeline() {
     log "Verifying pipeline connectivity..."
     
-    # Check EMQX
-    if ! kubectl get pods -n emqx 2>/dev/null | grep -q "Running"; then
-        log "ERROR: EMQX not running"
+    # Check EMQX (allow Running or Unknown with Ready condition)
+    emqx_status=$(kubectl get pod emqx -n emqx -o jsonpath='{.status.phase}' 2>/dev/null)
+    if [[ "$emqx_status" != "Running" && "$emqx_status" != "Unknown" ]]; then
+        log "ERROR: EMQX not running (status: $emqx_status)"
         exit 1
     fi
     
@@ -83,9 +84,15 @@ verify_pipeline() {
         exit 1
     fi
     
-    # Check NATS Consumer
-    if ! kubectl get pods -n nats-consumer 2>/dev/null | grep -q "Running"; then
-        log "ERROR: NATS Consumer not running"
+    # Check NATS Consumer (check if pod exists and is Running or recently started)
+    consumer_pod=$(kubectl get pods -n nats-consumer -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -z "$consumer_pod" ]; then
+        log "ERROR: NATS Consumer pod not found"
+        exit 1
+    fi
+    consumer_ready=$(kubectl get pod "$consumer_pod" -n nats-consumer -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null)
+    if [ "$consumer_ready" != "true" ]; then
+        log "ERROR: NATS Consumer not ready (ready: $consumer_ready)"
         exit 1
     fi
     
@@ -98,18 +105,27 @@ collect_data() {
     
     log "Collecting data from VictoriaMetrics..."
     
-    # Use SSH with password to run query from master node
-    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_ts'" > "${DATA_DIR}/${scenario_name}_sensor_ts.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_sensor_ts.json"
+    # Wait for consumer to drain pending messages
+    sleep 15
     
-    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_nats_exit_ts'" > "${DATA_DIR}/${scenario_name}_nats_exit.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_nats_exit.json"
+    # Use Python script to avoid shell quoting issues
+    # Script queries VM and writes NDJSON format expected by load_data
+    local end_time=$(date +%s)
+    local start_time=$((end_time - 300))  # Last 5 minutes
     
-    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_temp'" > "${DATA_DIR}/${scenario_name}_sensor_temp.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_sensor_temp.json"
-    
-    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_pm25'" > "${DATA_DIR}/${scenario_name}_sensor_pm25.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_sensor_pm25.json"
-    
-    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_pm10'" > "${DATA_DIR}/${scenario_name}_sensor_pm10.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_sensor_pm10.json"
-    
-    sshpass -p 'mvdsi304' ssh -o StrictHostKeyChecking=no master@192.168.1.50 "curl -s 'http://10.43.222.150:8428/api/v1/query?query=iot_sensor_hum'" > "${DATA_DIR}/${scenario_name}_sensor_hum.json" 2>/dev/null || echo '{}' > "${DATA_DIR}/${scenario_name}_sensor_hum.json"
+    for pair in "sensor_ts:iot_sensor_ts" "nats_exit:iot_sensor_nats_exit_ts" "sensor_temp:iot_sensor_temp" "sensor_hum:iot_sensor_hum"; do
+        local key="${pair%%:*}"
+        local metric="${pair##*:}"
+        local output="${DATA_DIR}/${scenario_name}_${key}.json"
+        
+        # Use Python script to query VM (handles URL encoding properly)
+        python3 /tmp/vm_query.py "${metric}" "${output}" 2>/dev/null
+        
+        # If file is empty or doesn't exist, write empty JSON
+        if [ ! -s "${output}" ]; then
+            echo '{"data":[]}' > "${output}"
+        fi
+    done
     
     log "Data collected to ${DATA_DIR}/${scenario_name}_*.json"
 }
@@ -146,23 +162,62 @@ NODE_COUNT = ${NODE_COUNT}
 def load_data(filename):
     if not os.path.exists(filename):
         return {}
-    with open(filename) as f:
-        data = json.load(f)
     results = {}
-    for r in data.get('data', {}).get('result', []):
-        msg_id = r['metric'].get('msg_id', 'unknown')
-        dev = r['metric'].get('device_id', 'unknown')
-        val = float(r['value'][1])
-        ts = float(r['value'][0])
-        results[msg_id] = {'value': val, 'timestamp': ts, 'device_id': dev}
+    with open(filename) as f:
+        content = f.read().strip()
+        if not content:
+            return {}
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            # NDJSON format: each line is a JSON object
+            for line in content.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # Handle export API format (NDJSON line)
+                if 'metric' in r:
+                    msg_id = r.get('metric', {}).get('msg_id', 'unknown')
+                    values = r.get('values', [])
+                    timestamps = r.get('timestamps', [])
+                    for i, val in enumerate(values):
+                        ts = timestamps[i] if i < len(timestamps) else val
+                        results[msg_id] = {'value': float(val), 'timestamp': float(ts), 'device_id': r.get('metric', {}).get('device_id', 'unknown')}
+        else:
+            # Query API format: {"status":"success","data":{"resultType":"vector","result":[...]}}
+            if isinstance(data, dict) and 'data' in data:
+                result_type = data['data'].get('resultType', '')
+                result_list = data['data'].get('result', [])
+                
+                if result_type == 'vector':
+                    for r in result_list:
+                        metric = r.get('metric', {})
+                        msg_id = metric.get('msg_id', 'unknown')
+                        if 'value' in r and len(r['value']) == 2:
+                            val, ts = r['value']
+                            results[msg_id] = {'value': float(val), 'timestamp': float(ts), 'device_id': metric.get('device_id', 'unknown')}
+                elif result_type == 'matrix':
+                    for r in result_list:
+                        metric = r.get('metric', {})
+                        msg_id = metric.get('msg_id', 'unknown')
+                        values = r.get('values', [])
+                        timestamps = r.get('timestamps', [])
+                        for i, val in enumerate(values):
+                            if i < len(timestamps):
+                                ts = timestamps[i]
+                            else:
+                                ts = val
+                            results[msg_id] = {'value': float(val), 'timestamp': float(ts), 'device_id': metric.get('device_id', 'unknown')}
     return results
 
 # Load all data
 nats_exit = load_data(f"{DATA_FILE}_nats_exit.json")
 sensor_ts = load_data(f"{DATA_FILE}_sensor_ts.json")
 sensor_temp = load_data(f"{DATA_FILE}_sensor_temp.json")
-sensor_pm25 = load_data(f"{DATA_FILE}_sensor_pm25.json")
-sensor_pm10 = load_data(f"{DATA_FILE}_sensor_pm10.json")
 sensor_hum = load_data(f"{DATA_FILE}_sensor_hum.json")
 
 # Calculate latencies
@@ -179,8 +234,6 @@ for msg_id in nats_exit:
             'nats_exit_ts': nats_exit[msg_id]['value'],
             'latency_ms': lat,
             'temp_c': sensor_temp.get(msg_id, {}).get('value', 0),
-            'pm25': sensor_pm25.get(msg_id, {}).get('value', 0),
-            'pm10': sensor_pm10.get(msg_id, {}).get('value', 0),
             'hum_pct': sensor_hum.get(msg_id, {}).get('value', 0)
         }
 

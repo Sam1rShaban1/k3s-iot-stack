@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: image-loader
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: image-loader
+  template:
+    metadata:
+      labels:
+        app: image-loader
+    spec:
+      hostNetwork: true
+      containers:
+        - name: loader
+          image: rancher/k3s:v1.34.6-k3s1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              if k3s ctr images ls | grep -q "nats-consumer.*local"; then
+                echo "Image already loaded"
+              else
+                echo "Loading image..."
+                k3s ctr images import /tmp/nats-consumer.tar
+              fi
+              sleep 3600
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          hostPath:
+            path: /tmp
+      tolerations:
+        - key: "arm"
+          operator: "Exists"
+          effect: "NoSchedule"

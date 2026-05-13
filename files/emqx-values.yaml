@@ -1,4 +1,4 @@
-replicaCount: 3
+replicaCount: 2
 
 service:
   type: LoadBalancer
@@ -19,11 +19,11 @@ service:
 
 resources:
   requests:
-    cpu: 750m
-    memory: 768Mi
+    cpu: 400m
+    memory: 512Mi
   limits:
-    cpu: 1500m
-    memory: 2Gi
+    cpu: 1200m
+    memory: 1536Mi
 
 persistence:
   enabled: true
@@ -94,6 +94,13 @@ nodeSelector:
   kubernetes.io/arch: arm64
 
 affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      preference:
+        matchExpressions:
+        - key: node-role.kubernetes.io/control-plane
+          operator: DoesNotExist
   podAntiAffinity:
     requiredDuringSchedulingIgnoredDuringExecution:
     - weight: 100
