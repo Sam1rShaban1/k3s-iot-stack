@@ -17,7 +17,7 @@ COOLDOWN=30
 
 # Test scenarios: (clients, total_rate_msg_s)
 CLIENT_COUNTS=(10 100)
-TOTAL_RATES=(100 500)
+TOTAL_RATES=(100 500 1000 2000)
 
 # Output directories
 BENCHMARK_DIR="./benchmarks/$(date +%Y%m%d_%H%M%S)"
@@ -28,8 +28,8 @@ DATA_DIR="${BENCHMARK_DIR}/raw_data"
 # Metadata
 RUN_ID="run_$(date +%Y%m%d_%H%M%S)"
 RUN_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-NODE_COUNT=2
-NODES="raspberrypi,pi7"
+NODE_COUNT=5
+NODES="raspberrypi,pi7,pi2,pi3,pi4"
 
 # ulimit for high concurrency
 ulimit -n 10000
@@ -59,9 +59,10 @@ verify_pipeline() {
     log "Verifying pipeline connectivity..."
     
     # Check EMQX (allow Running or Unknown with Ready condition)
-    emqx_status=$(kubectl get pod emqx -n emqx -o jsonpath='{.status.phase}' 2>/dev/null)
-    if [[ "$emqx_status" != "Running" && "$emqx_status" != "Unknown" ]]; then
-        log "ERROR: EMQX not running (status: $emqx_status)"
+    emqx_pods=$(kubectl get pods -n emqx -l app=emqx --no-headers 2>/dev/null | wc -l)
+    emqx_ready=$(kubectl get pods -n emqx -l app=emqx --no-headers 2>/dev/null | grep "Running" | wc -l)
+    if [ "$emqx_ready" -eq 0 ] || [ "$emqx_pods" -eq 0 ]; then
+        log "ERROR: EMQX not running (pods: $emqx_pods, ready: $emqx_ready)"
         exit 1
     fi
     
@@ -119,7 +120,7 @@ collect_data() {
         local output="${DATA_DIR}/${scenario_name}_${key}.json"
         
         # Use Python script to query VM (handles URL encoding properly)
-        python3 /tmp/vm_query.py "${metric}" "${output}" 2>/dev/null
+        python3 "$(dirname "$0")/vm_query.py" "${metric}" "${output}" 2>/dev/null
         
         # If file is empty or doesn't exist, write empty JSON
         if [ ! -s "${output}" ]; then
@@ -322,8 +323,6 @@ for dev, data in devices.items():
         'nats_exit_ts': data['nats_exit_ts'],
         'latency_ms': round(data['latency_ms'], 3),
         'temp_c': round(data['temp_c'], 2),
-        'pm25': round(data['pm25'], 2),
-        'pm10': round(data['pm10'], 2),
         'hum_pct': round(data['hum_pct'], 2)
     })
 

@@ -4,7 +4,7 @@ metadata:
   name: nats-consumer
   namespace: nats-consumer
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: nats-consumer
@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: nats-consumer
-          image: nats-consumer-python:latest
+          image: 192.168.1.50:30500/nats-consumer:python
           imagePullPolicy: IfNotPresent
           command: ["python3", "-u", "/opt/consumer/consumer.py"]
           env:
@@ -45,6 +45,15 @@ spec:
         - name: consumer-script
           configMap:
             name: nats-consumer-script
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: nats-consumer
+              topologyKey: kubernetes.io/hostname
       nodeSelector:
         kubernetes.io/arch: arm64
       tolerations:

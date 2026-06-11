@@ -12,18 +12,19 @@ data:
     import os
     import aiohttp
     from nats.aio.client import Client as NATS
-    
-NATS_URL = os.getenv("NATS_URL", "nats://10.42.0.176:4222")
-VM_URL = os.getenv("VICTORIA_METRICS_URL", "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/write")
-STREAM = "IOT_DATA"
-SUBJECT = "iot.data"
-CONSUMER_PUSH = "metrics-consumer-push"
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "2000"))
-BATCH_TIMEOUT = float(os.getenv("BATCH_TIMEOUT", "0.05"))
-MAX_CONCURRENT_SENDS = int(os.getenv("MAX_CONCURRENT_SENDS", "16"))
-    
-    msg_count = 0
-    
+    from nats.js.api import DeliverPolicy
+
+    NATS_URL = os.getenv("NATS_URL", "nats://nats.nats.svc.cluster.local:4222")
+    VM_URL = os.getenv("VICTORIA_METRICS_URL", "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/write")
+    STREAM = "IOT_DATA"
+    SUBJECT = "iot.data"
+    CONSUMER_PUSH = "metrics-consumer-push-v2"
+    BATCH_SIZE = int(os.getenv("BATCH_SIZE", "5000"))
+    BATCH_TIMEOUT = float(os.getenv("BATCH_TIMEOUT", "0.02"))
+    MAX_CONCURRENT_SENDS = int(os.getenv("MAX_CONCURRENT_SENDS", "32"))
+
+    msg_seq = 0
+
     async def setup():
         nc = NATS()
         await nc.connect(NATS_URL)
@@ -37,34 +38,33 @@ MAX_CONCURRENT_SENDS = int(os.getenv("MAX_CONCURRENT_SENDS", "16"))
                 print(f"Stream attempt {i+1} failed: {e}")
                 await asyncio.sleep(1)
         return nc, js
-    
+
+    def format_metrics(data, vm_entry_ts):
+        device = data.get("device_id", "unknown")
+        lines = []
+        data["nats_exit_ts"] = vm_entry_ts
+        if "benthos_entry_ts" in data:
+            data["benthos_to_nats_latency_ms"] = vm_entry_ts - data["benthos_entry_ts"]
+        for k, v in data.items():
+            if isinstance(v, (int, float)):
+                lines.append(f'iot_sensor_{k}{{device_id="{device}"}} {v}')
+        return lines
+
     async def send_vm_batch(session, batch):
-        global msg_count
+        global msg_seq
         if not batch:
             return 0
-        
-        metrics = []
+
         vm_entry_ts = int(time.time() * 1000)
-        
+        metrics = []
         for data in batch:
-            data["nats_exit_ts"] = vm_entry_ts
-            if "benthos_entry_ts" in data:
-                data["benthos_to_nats_latency_ms"] = vm_entry_ts - data["benthos_entry_ts"]
-            
-            device = data.get("device_id", "unknown")
-            msg_id = f"m{msg_count}"
-            msg_count += 1
-            
-            for k, v in data.items():
-                if isinstance(v, (int, float)):
-                    metrics.append(f'iot_sensor_{k}{{device_id="{device}",msg_id="{msg_id}"}} {v}')
-        
-        print(f"VM: sending {len(metrics)} metrics for {len(batch)} msgs")
+            msg_seq += 1
+            metrics.extend(format_metrics(data, vm_entry_ts))
+
         try:
-            async with session.post(VM_URL, data="\n".join(metrics), 
+            async with session.post(VM_URL, data="\n".join(metrics),
                                     timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status in [200, 204]:
-                    print(f"VM: OK batch {len(batch)}")
                     return len(batch)
                 else:
                     text = await resp.text()
@@ -73,45 +73,58 @@ MAX_CONCURRENT_SENDS = int(os.getenv("MAX_CONCURRENT_SENDS", "16"))
         except Exception as e:
             print(f"VM error: {e}")
             return 0
-    
-    async def batch_sender(session, batch_queue):
+
+    async def batch_sender(session, batch_queue, drain_event, inflight):
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_SENDS)
-        
+
         async def send_with_sem(batch):
             async with semaphore:
-                return await send_vm_batch(session, batch)
-        
+                result = await send_vm_batch(session, batch)
+                inflight["count"] -= 1
+                return result
+
         while True:
-            await asyncio.sleep(BATCH_TIMEOUT)
-            if batch_queue:
-                batch = batch_queue[:BATCH_SIZE]
+            await drain_event.wait()
+            drain_event.clear()
+            if not batch_queue:
+                continue
+
+            sent = 0
+            while batch_queue and inflight["count"] < MAX_CONCURRENT_SENDS * 3:
+                chunk = batch_queue[:BATCH_SIZE]
                 del batch_queue[:BATCH_SIZE]
-                print(f"Batch: processing {len(batch)} msgs")
-                asyncio.create_task(send_with_sem(batch))
-    
-    async def h(msg, batch_queue):
-        try:
-            d = json.loads(msg.data.decode())
-            batch_queue.append(d)
-            await msg.ack()
-            print(f"Msg: {d.get('device_id', 'unknown')[:20]} ts={d.get('ts', 0)}")
-        except Exception as e:
-            print(f"Err: {e}")
-            await msg.nak()
-    
+                inflight["count"] += 1
+                asyncio.create_task(send_with_sem(chunk))
+                sent += len(chunk)
+                if sent >= BATCH_SIZE * 8:
+                    break
+
+            if batch_queue:
+                asyncio.get_event_loop().call_soon(drain_event.set)
+
     async def main():
         print(f"Starting NATS consumer (batch mode, batch_size={BATCH_SIZE})...")
         nc, js = await setup()
         print(f"Subscribing to {SUBJECT}")
-        sub = await js.subscribe(subject=SUBJECT, stream=STREAM, durable=CONSUMER_PUSH)
-        
+        sub = await js.subscribe(subject=SUBJECT, stream=STREAM, queue="nats-consumer-group", deliver_policy=DeliverPolicy.NEW)
+
         batch_queue = []
-        
-        connector = aiohttp.TCPConnector(limit=100, limit_per_host=100)
+        drain_event = asyncio.Event()
+        drain_event.set()
+        inflight = {"count": 0}
+
+        connector = aiohttp.TCPConnector(limit=200, limit_per_host=200)
         async with aiohttp.ClientSession(connector=connector) as session:
-            asyncio.create_task(batch_sender(session, batch_queue))
-            
+            asyncio.create_task(batch_sender(session, batch_queue, drain_event, inflight))
+
             async for msg in sub.messages:
-                await h(msg, batch_queue)
-    
+                try:
+                    d = json.loads(msg.data.decode())
+                    batch_queue.append(d)
+                    drain_event.set()
+                    await msg.ack()
+                except Exception as e:
+                    print(f"Err: {e}")
+                    await msg.nak()
+
     asyncio.run(main())

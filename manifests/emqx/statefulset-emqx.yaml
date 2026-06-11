@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: emqx
+  namespace: emqx
+spec:
+  serviceName: emqx-headless
+  replicas: 2
+  selector:
+    matchLabels:
+      app: emqx
+  template:
+    metadata:
+      labels:
+        app: emqx
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - emqx
+              topologyKey: kubernetes.io/hostname
+      nodeName: raspberrypi
+      containers:
+      - name: emqx
+        image: emqx/emqx:5.8.0
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: EMQX_NODE__NAME
+          value: "emqx@$(POD_IP)"
+        - name: EMQX_NODE__COOKIE
+          value: emqxsecretcookie
+        - name: EMQX_CLUSTER__DISCOVERY_STRATEGY
+          value: dns
+        - name: EMQX_CLUSTER__DNS__TYPE
+          value: dns
+        - name: EMQX_CLUSTER__DNS__NAME
+          value: emqx-headless.emqx.svc.cluster.local
+        - name: EMQX_LISTENERS__TCP__DEFAULT__MAX_CONN_RATE
+          value: "1000"
+        - name: EMQX_LISTENERS__TCP__DEFAULT__MAX_CONNECTIONS
+          value: "50000"
+        - name: EMQX_AUTHORIZATION__NO_MATCH
+          value: allow
+        - name: EMQX_AUTHORIZATION__SOURCES
+          value: "[]"
+        ports:
+        - containerPort: 1883
+          name: mqtt
+        - containerPort: 8883
+          name: mqtts
+        - containerPort: 8083
+          name: ws
+        - containerPort: 8084
+          name: wss
+        - containerPort: 18083
+          name: dashboard
+        - containerPort: 4370
+          name: erlang-dist
+        resources:
+          limits:
+            cpu: "1"
+            memory: 2Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi

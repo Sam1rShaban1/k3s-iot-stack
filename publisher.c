@@ -69,6 +69,9 @@ int main(int argc, char *argv[]) {
   printf("Client [%s] connected to %s. Publishing to %s...\n", final_client_id,
          broker_address, topic);
 
+  struct timespec cycle_start;
+  clock_gettime(CLOCK_MONOTONIC, &cycle_start);
+
   while (1) {
     char payload[512];
     struct timeval tv;
@@ -79,19 +82,13 @@ int main(int argc, char *argv[]) {
         (long long)(tv.tv_sec) * 1000 + (long long)(tv.tv_usec) / 1000;
 
     // 2. Generate Randomized Sensor Data
-    // PM values
-    float pm1 = (float)(rand() % 3001) / 10.0; // 0.0 - 300.0
+    float pm1 = (float)(rand() % 3001) / 10.0;
     float pm25 = pm1 + (float)(rand() % 2001) / 10.0;
     float pm10 = pm25 + (float)(rand() % 5001) / 10.0;
-
-    // Temperature: Range -20.0 to +50.0
     float temp = ((float)(rand() % 701) / 10.0) - 20.0;
-
-    // Humidity: Range 0.0 to 100.0
     float hum = (float)(rand() % 1001) / 10.0;
 
     // 3. Format Payload as JSON
-    // Using %lld for long long timestamp
     sprintf(payload,
             "{\"device_id\":\"%s\",\"ts\":%lld,\"pm1\":%.2f,\"pm25\":%.2f,"
             "\"pm10\":%.2f,\"temp\":%.2f,\"hum\":%.2f}",
@@ -99,22 +96,29 @@ int main(int argc, char *argv[]) {
 
     pubmsg.payload = payload;
     pubmsg.payloadlen = (int)strlen(payload);
-    pubmsg.qos = 0; // QoS 0 for maximum speed (non-blocking)
+    pubmsg.qos = 0;
     pubmsg.retained = 0;
 
     // 4. Publish
     if ((rc = MQTTClient_publishMessage(client, topic, &pubmsg, &token)) !=
         MQTTCLIENT_SUCCESS) {
       fprintf(stderr, "Failed to publish message, return code %d\n", rc);
-      // Attempt to reconnect if connection lost
       if (rc == MQTTCLIENT_DISCONNECTED) {
         MQTTClient_connect(client, &conn_opts);
       }
     }
 
-    // 5. Precise Inter-message Delay
+    // 5. Compensated Inter-message Delay
     if (delay_us > 0) {
-      usleep(delay_us);
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      long elapsed_us = (now.tv_sec - cycle_start.tv_sec) * 1000000 +
+                        (now.tv_nsec - cycle_start.tv_nsec) / 1000;
+      long remaining_us = delay_us - elapsed_us;
+      if (remaining_us > 0) {
+        usleep(remaining_us);
+      }
+      clock_gettime(CLOCK_MONOTONIC, &cycle_start);
     }
   }
 
