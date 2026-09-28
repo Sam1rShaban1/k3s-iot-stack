@@ -3,6 +3,8 @@ kind: Application
 metadata:
   name: emqx
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   project: default
   source:
@@ -10,10 +12,35 @@ spec:
     targetRevision: 5.8.0
     chart: emqx
     helm:
+      releaseName: emqx
       values: |
         replicaCount: 1
+        # P0.3 change: NodePort -> LoadBalancer with a pinned address.
+        #
+        # Paper §III-C states EMQX is "exposed via MetalLB on 192.168.1.241:1883".
+        # That was not true of the repository: the app previously declared
+        # service.type: NodePort, which MetalLB does not assign an address to,
+        # and which allocates from 30000-32767, not 1883. The orphaned
+        # manifests/emqx/service-emqx.yaml (removed in P0.2) pinned nodePort 31883.
+        # So the only address in the repo that claimed port 1883 on a routable
+        # interface was the paper's, and it could not have been produced by the
+        # declared config. See docs/alternatives-considered.md -> Open questions.
+        #
+        # 192.168.1.241 is inside the MetalLB pool 192.168.1.240-250
+        # (files/metallb-config.yaml). Pinning it rather than auto-assigning
+        # makes the broker address stable across rebuilds, which is what the
+        # benchmark harness needs. VERIFY ON FIRST REBUILD: if the chart
+        # version rejects loadBalancerIP, fall back to service.annotations with
+        # metallb.io/loadBalancerIPs and record the deviation.
         service:
-          type: NodePort
+          type: LoadBalancer
+          loadBalancerIP: 192.168.1.241
+          ports:
+            mqtt: 1883
+            mqtts: 8883
+            ws: 8083
+            wss: 8084
+            dashboard: 18083
         resources:
           limits:
             cpu: 500m

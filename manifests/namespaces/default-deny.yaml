@@ -1,0 +1,90 @@
+# ---------------------------------------------------------------------------
+# default-deny.yaml — NOT CURRENTLY APPLIED
+#
+# Paper §III-I asserts: "All namespaces run with default-deny ingress."
+# That assertion was false for the entire benchmark period — no default-deny
+# policy existed anywhere in the repository. This file makes the claim
+# constructible, but it is deliberately left OUT of
+# manifests/namespaces/kustomization.yaml.
+#
+# WHY IT IS NOT ENABLED YET
+#
+# These policies are not currently in the kustomization, so the cluster has
+# been running with partial, hand-applied rules. Turning on default-deny is
+# therefore a *behaviour change* from the state the paper measured, and it is
+# the single highest-risk item in the P0/P1 rebuild: any allow rule that is
+# subtly wrong will not fail loudly, it will fail as a pipeline that silently
+# stops ingesting.
+#
+# The paper's own §VI-F guidance is "Test network policies under realistic
+# traffic" — a rule that passes integration testing can still fail under
+# sustained load, which is exactly how the May 14 13:34 incident presented.
+# Applying a never-before-applied default-deny without a live cluster to test
+# against would repeat the paper's central mistake.
+#
+# ENABLEMENT PLAN (P1, requires the cluster to be back up)
+#   1. Bring the cluster up with the corrected network-policies.yaml only.
+#   2. Verify end-to-end ingest at 100 msg/s (harness preflight + one scenario).
+#   3. Verify Prometheus is scraping every target and Grafana panels populate.
+#   4. Then add this file to the kustomization and re-run step 2 and 3.
+#   5. Record the step-4 result; it becomes the reproduction recipe for
+#      detector class 3 (NetworkPolicy DNS egress block).
+#
+# A named detector (P3) will assert that this file is referenced from the
+# kustomization, and that no policy in the applied set contains a bare
+# podSelector for kube-dns. Both are statically checkable.
+# ---------------------------------------------------------------------------
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: emqx
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: benthos
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: nats
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: nats-consumer
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: victoriametrics
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: monitoring
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

@@ -1,4 +1,34 @@
+/*
+ * MQTT load generator for the K3s IoT benchmark pipeline.
+ *
+ * Build:
+ *   gcc publisher.c -o publisher -lpaho-mqtt3c
+ *
+ * Model: ONE PROCESS PER SIMULATED DEVICE. The harness spawns N of these to
+ * simulate N devices. (Paper §IV-E previously described this as "one POSIX
+ * thread per simulated device"; the implementation has always been
+ * process-per-device. The paper text is corrected -- see
+ * docs/findings-p0.md D5.)
+ *
+ * The inter-message delay is COMPENSATED against publish time. This is the
+ * paper's §IV-E fix and must not be "simplified" back to a bare usleep: naive
+ * usleep(interval) drifts because it sleeps for the full interval in addition
+ * to the time the publish itself consumed, so the delivered rate falls below
+ * target and every efficiency figure becomes unreliable. The compensated form
+ * below computes the target wake time, then sleeps only for the remainder.
+ *
+ * P0.5 additions (all backward compatible; positional form still works):
+ *   --qos N         publish at QoS 0/1/2. QoS 2 is required to reproduce the
+ *                   serialization ceiling in paper §V-C (four-way handshake,
+ *                   ~50 msg/s per connection at ~20 ms round-trip).
+ *   --duration N    exit cleanly after N seconds instead of running until
+ *                   killed. Removes the harness's fragile `pkill -f publisher`.
+ *   --host/--port/--topic/--delay-us/--device-prefix
+ *                   named forms of the positional arguments.
+ */
+
 #include "MQTTClient.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,37 +37,112 @@
 #include <time.h>
 #include <unistd.h>
 
-/*
- * Build command:
- * gcc publisher.c -o publisher -lpaho-mqtt3c
- */
+static void usage(const char *prog) {
+  fprintf(stderr,
+          "Usage: %s <host> <port> <device-prefix> <delay-us> <topic> [options]\n"
+          "       %s --host H --port P --device-prefix D --delay-us U "
+          "--topic T [options]\n"
+          "\n"
+          "Options:\n"
+          "  --qos N            0, 1 or 2 (default 0). QoS 2 reproduces the\n"
+          "                     serialization ceiling described in paper V-C.\n"
+          "  --duration N       exit after N seconds (default: run forever)\n"
+          "  --seed N           RNG seed (default: time+pid, i.e. random)\n"
+          "\n"
+          "Example:\n"
+          "  %s 192.168.1.241 1883 sensor_node 200000 sensors/data --qos 0 "
+          "--duration 60\n",
+          prog, prog, prog);
+}
+
+/* Monotonic seconds, for duration accounting. */
+static double mono_sec(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
+}
 
 int main(int argc, char *argv[]) {
-  // Check for required arguments
-  if (argc < 6) {
-    printf("Usage: %s <Broker_IP> <Port> <Base_ClientID> <Delay_US> <Topic>\n",
-           argv[0]);
-    printf("Example: %s 192.168.1.50 30295 sensor_node 200000 sensors/data\n",
-           argv[0]);
-    return 1;
+  const char *broker_ip = NULL;
+  int broker_port = 0;
+  const char *base_id = NULL;
+  int delay_us = 0;
+  const char *topic = NULL;
+  int qos = 0;
+  double duration_s = 0.0; /* 0 == run until killed */
+  unsigned long seed = 0;
+  int positional = 0;
+  int i;
+
+  /* Parse: accept positional args first, then --flags in any order. */
+  char *pos[5];
+  int npos = 0;
+  for (i = 1; i < argc; i++) {
+    if (strncmp(argv[i], "--", 2) != 0) {
+      if (npos < 5)
+        pos[npos++] = argv[i];
+      continue;
+    }
+    if (!strcmp(argv[i], "--qos") && i + 1 < argc) {
+      qos = atoi(argv[++i]);
+    } else if (!strcmp(argv[i], "--duration") && i + 1 < argc) {
+      duration_s = atof(argv[++i]);
+    } else if (!strcmp(argv[i], "--seed") && i + 1 < argc) {
+      seed = strtoul(argv[++i], NULL, 10);
+    } else if (!strcmp(argv[i], "--host") && i + 1 < argc) {
+      broker_ip = argv[++i];
+    } else if (!strcmp(argv[i], "--port") && i + 1 < argc) {
+      broker_port = atoi(argv[++i]);
+    } else if (!strcmp(argv[i], "--device-prefix") && i + 1 < argc) {
+      base_id = argv[++i];
+    } else if (!strcmp(argv[i], "--delay-us") && i + 1 < argc) {
+      delay_us = atoi(argv[++i]);
+    } else if (!strcmp(argv[i], "--topic") && i + 1 < argc) {
+      topic = argv[++i];
+    } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+      usage(argv[0]);
+      return 0;
+    } else {
+      fprintf(stderr, "unknown option: %s\n", argv[i]);
+      usage(argv[0]);
+      return 1;
+    }
   }
 
-  char *broker_ip = argv[1];
-  int broker_port = atoi(argv[2]);
-  char *base_id = argv[3];
-  int delay_us = atoi(argv[4]);
-  char *topic = argv[5];
+  /* Fill any positional gaps that were not supplied as flags. */
+  if (!broker_ip && npos > 0)
+    broker_ip = pos[0];
+  if (!broker_port && npos > 1)
+    broker_port = atoi(pos[1]);
+  if (!base_id && npos > 2)
+    base_id = pos[2];
+  if (!delay_us && npos > 3)
+    delay_us = atoi(pos[3]);
+  if (!topic && npos > 4)
+    topic = pos[4];
+  positional = npos;
 
-  // Create unique Client ID using PID + nanosecond timestamp to allow high concurrency
+  if (!broker_ip || broker_port <= 0 || !base_id || !topic) {
+    usage(argv[0]);
+    return 1;
+  }
+  if (qos < 0 || qos > 2) {
+    fprintf(stderr, "qos must be 0, 1 or 2 (got %d)\n", qos);
+    return 1;
+  }
+  (void)positional;
+
+  /* Unique client id per process: base id + pid + nanoseconds. */
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   int pid = (int)getpid();
-  char final_client_id[64];
-  snprintf(final_client_id, sizeof(final_client_id), "%s_%d_%ld", base_id, pid, ts.tv_nsec);
+  char final_client_id[128];
+  snprintf(final_client_id, sizeof(final_client_id), "%s_%d_%ld", base_id, pid,
+           ts.tv_nsec);
 
-  // Setup MQTT Connection
-  char broker_address[128];
-  sprintf(broker_address, "tcp://%s:%d", broker_ip, broker_port);
+  char broker_address[160];
+  snprintf(broker_address, sizeof(broker_address), "tcp://%s:%d", broker_ip,
+           broker_port);
 
   MQTTClient client;
   MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
@@ -46,8 +151,8 @@ int main(int argc, char *argv[]) {
   int rc;
 
   if ((rc = MQTTClient_create(&client, broker_address, final_client_id,
-                              MQTTCLIENT_PERSISTENCE_NONE, NULL)) !=
-      MQTTCLIENT_SUCCESS) {
+                              MQTTCLIENT_PERSISTENCE_NONE,
+                              NULL)) != MQTTCLIENT_SUCCESS) {
     fprintf(stderr, "Failed to create client, return code %d\n", rc);
     return rc;
   }
@@ -57,72 +162,102 @@ int main(int argc, char *argv[]) {
 
   if ((rc = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS) {
     fprintf(stderr, "Failed to connect, return code %d\n", rc);
+    MQTTClient_destroy(&client);
     return rc;
   }
 
-  // Seed random number generator with time + pid for unique data streams
-  srand(time(NULL) + pid + ts.tv_nsec);
-  
-  // Add small random delay (0-100ms) to stagger connections
+  srand(seed ? (unsigned)seed
+              : (unsigned)(time(NULL) + (long)pid + ts.tv_nsec));
+
+  /* Stagger connections so N processes do not all CONNECT in the same
+   * millisecond, which would distort the broker's per-connection view. */
   usleep(rand() % 100000);
 
-  printf("Client [%s] connected to %s. Publishing to %s...\n", final_client_id,
-         broker_address, topic);
+  printf("Client [%s] connected to %s. Publishing to %s (qos=%d, delay=%dus)%s\n",
+         final_client_id, broker_address, topic, qos, delay_us,
+         duration_s > 0 ? ", bounded duration" : "");
+
+  const double start_s = mono_sec();
+  long published = 0;
+  long reconnects = 0;
 
   struct timespec cycle_start;
   clock_gettime(CLOCK_MONOTONIC, &cycle_start);
 
-  while (1) {
+  for (;;) {
+    if (duration_s > 0 && (mono_sec() - start_s) >= duration_s)
+      break;
+
     char payload[512];
     struct timeval tv;
     gettimeofday(&tv, NULL);
 
-    // 1. Generate High-Resolution Timestamp (Milliseconds)
+    /* 1. High-resolution publish timestamp (milliseconds, wall clock). */
     long long ts_ms =
         (long long)(tv.tv_sec) * 1000 + (long long)(tv.tv_usec) / 1000;
 
-    // 2. Generate Randomized Sensor Data
+    /* 2. Randomised sensor readings. */
     float pm1 = (float)(rand() % 3001) / 10.0;
     float pm25 = pm1 + (float)(rand() % 2001) / 10.0;
     float pm10 = pm25 + (float)(rand() % 5001) / 10.0;
     float temp = ((float)(rand() % 701) / 10.0) - 20.0;
     float hum = (float)(rand() % 1001) / 10.0;
 
-    // 3. Format Payload as JSON
-    sprintf(payload,
-            "{\"device_id\":\"%s\",\"ts\":%lld,\"pm1\":%.2f,\"pm25\":%.2f,"
-            "\"pm10\":%.2f,\"temp\":%.2f,\"hum\":%.2f}",
-            final_client_id, ts_ms, pm1, pm25, pm10, temp, hum);
+    /* 3. JSON payload. No msg_id: an unbounded per-message label is exactly
+     *    what broke VictoriaMetrics in paper §VI-C. Per-message correlation
+     *    is the consumer's job now (it publishes iot_sensor_latency_ms). */
+    snprintf(payload, sizeof(payload),
+             "{\"device_id\":\"%s\",\"ts\":%lld,\"pm1\":%.2f,\"pm25\":%.2f,"
+             "\"pm10\":%.2f,\"temp\":%.2f,\"hum\":%.2f}",
+             final_client_id, ts_ms, pm1, pm25, pm10, temp, hum);
 
     pubmsg.payload = payload;
     pubmsg.payloadlen = (int)strlen(payload);
-    pubmsg.qos = 0;
+    pubmsg.qos = qos;
     pubmsg.retained = 0;
 
-    // 4. Publish
+    /* 4. Publish. */
     if ((rc = MQTTClient_publishMessage(client, topic, &pubmsg, &token)) !=
         MQTTCLIENT_SUCCESS) {
       fprintf(stderr, "Failed to publish message, return code %d\n", rc);
       if (rc == MQTTCLIENT_DISCONNECTED) {
-        MQTTClient_connect(client, &conn_opts);
+        reconnects++;
+        fprintf(stderr, "disconnected; reconnecting (#%ld)\n", reconnects);
+        if (MQTTClient_connect(client, &conn_opts) != MQTTCLIENT_SUCCESS) {
+          fprintf(stderr, "reconnect failed; aborting\n");
+          break;
+        }
       }
+    } else {
+      published++;
     }
 
-    // 5. Compensated Inter-message Delay
+    /* 5. COMPENSATED inter-message delay.
+     *
+     * Sleep only for the time remaining until the next scheduled wake, having
+     * subtracted the time already spent in this iteration (publish + build).
+     * A bare usleep(delay_us) here would over-sleep by the publish duration
+     * and drift the delivered rate below target. Do not replace this with a
+     * plain sleep: it is the paper's §IV-E fix. */
     if (delay_us > 0) {
       struct timespec now;
       clock_gettime(CLOCK_MONOTONIC, &now);
       long elapsed_us = (now.tv_sec - cycle_start.tv_sec) * 1000000 +
                         (now.tv_nsec - cycle_start.tv_nsec) / 1000;
       long remaining_us = delay_us - elapsed_us;
-      if (remaining_us > 0) {
-        usleep(remaining_us);
-      }
+      if (remaining_us > 0)
+        usleep((useconds_t)remaining_us);
       clock_gettime(CLOCK_MONOTONIC, &cycle_start);
     }
   }
 
-  // Cleanup (though while(1) keeps it running until killed)
+  double elapsed = mono_sec() - start_s;
+  double achieved = elapsed > 0 ? (double)published / elapsed : 0.0;
+  printf("Client [%s] stopping after %.1fs: published=%ld achieved=%.2f msg/s "
+         "target=%.2f msg/s reconnects=%ld\n",
+         final_client_id, elapsed, published, achieved,
+         delay_us > 0 ? 1000000.0 / (double)delay_us : 0.0, reconnects);
+
   MQTTClient_disconnect(client, 10000);
   MQTTClient_destroy(&client);
   return 0;

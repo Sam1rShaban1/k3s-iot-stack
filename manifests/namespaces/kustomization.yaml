@@ -3,3 +3,13 @@ kind: Kustomization
 
 resources:
   - namespaces.yaml
+  - network-policies.yaml
+  # pod-disruption-budgets.yaml is intentionally NOT listed. Every PDB in that
+  # file targets a workload at replicas: 1, where a PDB is either a no-op or a
+  # deadlock risk during drain. Wire it in (or drop the PDBs) in P1, after the
+  # replica counts are raised.
+  #
+  # default-deny.yaml is intentionally NOT listed. See the enablement plan at
+  # the top of that file: turning on default-deny is a behaviour change from
+  # the state the paper measured, and must be verified against a live cluster
+  # in P1 before it is applied.

@@ -1,26 +1,96 @@
----
+# ---------------------------------------------------------------------------
+# NetworkPolicies — corrected in P0.3
+#
+# WHY THIS FILE WAS REWRITTEN (read before editing)
+#
+# The version this replaces had seven defects. Four of them are load-bearing
+# for the paper's claims, because the file had never been rendered by ArgoCD
+# (it was absent from manifests/namespaces/kustomization.yaml) and so had only
+# ever been applied by hand, partially, at inconvenient moments.
+#
+# BUG 1 — DNS egress matched nothing.  [root cause of paper §V-E1(c)]
+#   Every policy granted DNS with a bare podSelector:
+#       - to: [ { podSelector: { matchLabels: { k8s-app: kube-dns } } } ]
+#   A bare podSelector selects pods in the policy's OWN namespace. CoreDNS
+#   lives in kube-system, so none of these rules ever matched. DNS egress was
+#   therefore denied in all eight namespaces.
+#   FIX: combine namespaceSelector: {} with podSelector so CoreDNS is matched
+#   in any namespace. This is the fix the paper describes for the May 14 13:34
+#   incident, generalised to every policy rather than only the consumer's.
+#
+# BUG 2 — three policies were defined twice with conflicting bodies.
+#   emqx-, nats- and benthos-network-policy each appear twice. On apply the
+#   LAST definition silently wins, so the file's apparent contents were not
+#   the enforced contents. FIX: one definition each.
+#
+# BUG 3 — benthos ingress allowed the wrong port, so MQTT ingest was blocked.
+#   Ingress was from the emqx namespace on port 4195 (Benthos' own HTTP
+#   introspection port). The actual data path is EMQX -> Benthos on MQTT
+#   port 1883. FIX: 1883.
+#
+# BUG 4 — benthos podSelector used AND semantics and matched no pods.
+#   The second definition required BOTH app.kubernetes.io/name AND app:
+#       podSelector: { matchLabels: { app.kubernetes.io/name: benthos,
+#                                     app: benthos } }
+#   Multiple matchLabels are ANDed. The deployed Benthos carries
+#   app.kubernetes.io/name only, so the policy selected nothing and the
+#   namespace was left unprotected. FIX: single label.
+#
+# BUG 5 — external MQTT publishers were blocked entirely.  [NEW, not in paper]
+#   emqx ingress only allowed pods in the logging and benthos namespaces.
+#   The benchmark publisher (publisher.c, run from a laptop per paper §IV-E)
+#   and every real sensor arrive from the LAN, not from a labelled pod, so
+#   ingress policy would deny all of them. The ingest path could not have
+#   worked under these policies.
+#   FIX: ipBlock for the private ranges on 1883.
+#
+# BUG 6 — no policy allowed egress to the Kubernetes API server.
+#   Not present as a duplicate but as a systematic omission. ArgoCD,
+#   Prometheus, metrics-server and node-exporter all need to reach
+#   10.43.0.1:6443 (the in-cluster kubernetes ClusterIP). Under an
+#   egress-restricted policy they would silently fail.
+#   FIX: explicit rule to kube-system:6443 in every namespace policy.
+#
+# BUG 7 — the paper's "default-deny ingress" did not exist.
+#   Paper §III-I states "All namespaces run with default-deny ingress."
+#   There was no default-deny policy anywhere in the repository.
+#   TRUTHFULNESS: the claim is now true by construction, but see
+#   default-deny.yaml for why it is NOT enabled here yet.
+#
+# NOT CHANGED — previously suspected defect, verified as correct
+#   nats-consumer egress to victoriametrics uses a namespaceSelector on port
+#   8428. That is valid: a namespaceSelector matches all pods in the target
+#   namespace and 8428 is the VictoriaMetrics container port. Left as-is.
+# ---------------------------------------------------------------------------
+
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: nats-consumer-network-policy
   namespace: nats-consumer
 spec:
+  podSelector: {}
   policyTypes:
     - Ingress
     - Egress
   ingress:
+    # only the NATS server delivers to this namespace
     - from:
         - namespaceSelector:
             matchLabels:
               name: nats
-  egress:
-    - to:
-        - podSelector: {}
       ports:
         - protocol: TCP
-          port: 80
+          port: 4222
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: nats
+      ports:
         - protocol: TCP
-          port: 443
+          port: 4222
+    # consumer -> VictoriaMetrics remote-write
     - to:
         - namespaceSelector:
             matchLabels:
@@ -31,12 +101,14 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              name: nats
+              name: kube-system
       ports:
         - protocol: TCP
-          port: 4222
+          port: 6443
+    # BUG 1 fix: CoreDNS may live in any namespace depending on the distro
     - to:
-        - podSelector:
+        - namespaceSelector: {}
+          podSelector:
             matchLabels:
               k8s-app: kube-dns
       ports:
@@ -44,90 +116,64 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    - to:
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: emqx-network-policy
+  namespace: emqx
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # BUG 5 fix: sensors and the benchmark publisher arrive from the LAN
+    - from:
         - ipBlock:
-            cidr: 0.0.0.0/0
+            cidr: 192.168.1.0/24
+        - ipBlock:
+            cidr: 10.0.0.0/8
       ports:
         - protocol: TCP
-          port: 443
-
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: emqx-network-policy
-  namespace: emqx
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: emqx
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
+          port: 1883
+    # dashboard/API access
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 18083
+        - protocol: TCP
+          port: 8083
+    # log and trace shipping
     - from:
         - namespaceSelector:
             matchLabels:
               name: logging
         - namespaceSelector:
             matchLabels:
-              name: benthos
-      ports:
-        - protocol: TCP
-          port: 1883
-        - protocol: TCP
-          port: 8083
-        - protocol: TCP
-          port: 18083
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              name: benthos
-      ports:
-        - protocol: TCP
-          port: 1883
-    - to:
-        - podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: nats-network-policy
-  namespace: nats
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: nats
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
+              name: otel-collector
+    # BUG 3 fix: Benthos consumes MQTT from EMQX
     - from:
         - namespaceSelector:
             matchLabels:
               name: benthos
-        - namespaceSelector:
-            matchLabels:
-              name: nats-consumer
-        - namespaceSelector:
-            matchLabels:
-              name: otel-collector
       ports:
         - protocol: TCP
-          port: 4222
-        - protocol: TCP
-          port: 6222
+          port: 1883
   egress:
     - to:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: TCP
+          port: 6443
+    - to:
+        - namespaceSelector: {}
+          podSelector:
             matchLabels:
               k8s-app: kube-dns
       ports:
@@ -142,6 +188,7 @@ metadata:
   name: benthos-network-policy
   namespace: benthos
 spec:
+  # BUG 4 fix: single label. Deployed Benthos has app.kubernetes.io/name only.
   podSelector:
     matchLabels:
       app.kubernetes.io/name: benthos
@@ -149,22 +196,26 @@ spec:
     - Ingress
     - Egress
   ingress:
+    # BUG 3 fix: was 4195 (Benthos' HTTP port), should be MQTT
     - from:
         - namespaceSelector:
             matchLabels:
               name: emqx
       ports:
         - protocol: TCP
-          port: 4195
-  egress:
-    - to:
-        - podSelector:
-            matchLabels: {}
+          port: 1883
+    # Consequence of the BUG 4 fix: now that this policy actually selects the
+    # Benthos pod, it also needs to admit Prometheus scraping Benthos' HTTP
+    # stats endpoint on 4195, which the previous no-op policy let through by
+    # accident. Without this, fixing BUG 4 would silently blind the metrics.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
       ports:
         - protocol: TCP
-          port: 80
-        - protocol: TCP
-          port: 443
+          port: 4195
+  egress:
     - to:
         - namespaceSelector:
             matchLabels:
@@ -175,66 +226,13 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              name: victoriametrics
+              name: kube-system
       ports:
         - protocol: TCP
-          port: 8428
+          port: 6443
     - to:
-        - podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: emqx-network-policy
-  namespace: emqx
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: emqx
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              name: logging
-        - namespaceSelector:
-            matchLabels:
-              name: benthos
-      ports:
-        - protocol: TCP
-          port: 1883
-        - protocol: TCP
-          port: 8083
-        - protocol: TCP
-          port: 18083
-  egress:
-    - to:
-        - podSelector:
-            matchLabels: {}
-      ports:
-        - protocol: TCP
-          port: 80
-        - protocol: TCP
-          port: 443
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              name: benthos
-      ports:
-        - protocol: TCP
-          port: 1883
-    - to:
-        - podSelector:
+        - namespaceSelector: {}
+          podSelector:
             matchLabels:
               k8s-app: kube-dns
       ports:
@@ -249,9 +247,7 @@ metadata:
   name: nats-network-policy
   namespace: nats
 spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: nats
+  podSelector: {}
   policyTypes:
     - Ingress
     - Egress
@@ -266,6 +262,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               name: otel-collector
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
       ports:
         - protocol: TCP
           port: 4222
@@ -273,69 +272,15 @@ spec:
           port: 6222
   egress:
     - to:
-        - podSelector:
-            matchLabels: {}
-      ports:
-        - protocol: TCP
-          port: 80
-        - protocol: TCP
-          port: 443
-    - to:
-        - podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: benthos-network-policy
-  namespace: benthos
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: benthos
-      app: benthos
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
-    - from:
         - namespaceSelector:
             matchLabels:
-              name: emqx
+              name: kube-system
       ports:
         - protocol: TCP
-          port: 4195
-  egress:
+          port: 6443
     - to:
-        - podSelector:
-            matchLabels: {}
-      ports:
-        - protocol: TCP
-          port: 80
-        - protocol: TCP
-          port: 443
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              name: nats
-      ports:
-        - protocol: TCP
-          port: 4222
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              name: victoriametrics
-      ports:
-        - protocol: TCP
-          port: 8428
-    - to:
-        - podSelector:
+        - namespaceSelector: {}
+          podSelector:
             matchLabels:
               k8s-app: kube-dns
       ports:
@@ -350,9 +295,7 @@ metadata:
   name: victoriametrics-network-policy
   namespace: victoriametrics
 spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: victoria-metrics-single
+  podSelector: {}
   policyTypes:
     - Ingress
     - Egress
@@ -360,19 +303,24 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              name: monitoring
-        - namespaceSelector:
-            matchLabels:
-              name: benthos
-        - namespaceSelector:
-            matchLabels:
               name: nats-consumer
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
       ports:
         - protocol: TCP
           port: 8428
   egress:
     - to:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: TCP
+          port: 6443
+    - to:
+        - namespaceSelector: {}
+          podSelector:
             matchLabels:
               k8s-app: kube-dns
       ports:
@@ -387,6 +335,7 @@ metadata:
   name: monitoring-network-policy
   namespace: monitoring
 spec:
+  podSelector: {}
   policyTypes:
     - Egress
   egress:
@@ -397,6 +346,27 @@ spec:
       ports:
         - protocol: TCP
           port: 8428
+    # scrape targets: EMQX exporter, Benthos, NATS monitoring, node-exporter
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: emqx
+      ports:
+        - protocol: TCP
+          port: 18083
+        - protocol: TCP
+          port: 8883
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 9100
+    # Grafana -> Prometheus
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 9090
     - to:
         - namespaceSelector:
             matchLabels:
@@ -405,7 +375,15 @@ spec:
         - protocol: TCP
           port: 3100
     - to:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: TCP
+          port: 6443
+    - to:
+        - namespaceSelector: {}
+          podSelector:
             matchLabels:
               k8s-app: kube-dns
       ports:

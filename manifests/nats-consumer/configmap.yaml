@@ -4,6 +4,46 @@ metadata:
   name: nats-consumer-script
   namespace: nats-consumer
 data:
+  # -------------------------------------------------------------------------
+  # P0.4 changes to the consumer contract. Read manifests/nats-consumer/README.md
+  # before editing; consumer.py (the readable copy) must stay in sync.
+  #
+  # 1. nats_exit_ts is now stamped PER MESSAGE.
+  #    Previously one vm_entry_ts was computed per batch and applied to every
+  #    message in it, so the NATS->consumer stage was quantised to the batch
+  #    and could not be measured per message.
+  #
+  # 2. Added vm_write_ack_ts, stamped after the VictoriaMetrics POST returns.
+  #    Paper §VIII-A lists "unified end-to-end latency measurement" as future
+  #    work, because 5-node P99 was inter-arrival time rather than
+  #    sensor->storage. This makes end-to-end measurable and identical across
+  #    all cluster configurations.
+  #
+  # 3. Added latency_ms = vm_write_ack_ts - sensor ts, computed HERE.
+  #    This is the important one. The harness used to reconstruct latency by
+  #    joining iot_sensor_ts against iot_sensor_nats_exit_ts on a per-message
+  #    key. That key was msg_id, correctly removed in the paper's §VI-C
+  #    cardinality fix. With it gone the join collapsed into a single
+  #    "unknown" bucket and every scenario reported total_messages: 1
+  #    (benchmarks/20260519_130906/results/summary.json).
+  #    Computing latency here removes the join entirely: the consumer holds all
+  #    three timestamps at once, so it publishes the answer directly as one
+  #    bounded series. Paper §VI-C's prescription, applied literally --
+  #    bounded labels for aggregation, unbounded identifiers to traces.
+  #    Cardinality cost: +1 series per device. Still bounded.
+  #
+  # 4. ack() now happens AFTER a successful write, not on enqueue. Previously
+  #    messages were acked the moment they were queued, so a failed write lost
+  #    them permanently and max_deliver: -1 could never redeliver. That made
+  #    paper §VII's "a clean pod restart loses nothing" false. Failed batches
+  #    are nak'd with bounded backoff.
+  #
+  # 5. Removed the dead msg_seq counter: it was the abandoned replacement for
+  #    msg_id, incremented but never emitted.
+  #
+  # 6. Removed dead BATCH_TIMEOUT env var. It was never read by the previous
+  #    implementation, which drained on every message instead.
+  # -------------------------------------------------------------------------
   consumer.py: |
     #!/usr/bin/env python3
     import asyncio
@@ -15,15 +55,23 @@ data:
     from nats.js.api import DeliverPolicy
 
     NATS_URL = os.getenv("NATS_URL", "nats://nats.nats.svc.cluster.local:4222")
-    VM_URL = os.getenv("VICTORIA_METRICS_URL", "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/write")
+    VM_URL = os.getenv(
+        "VICTORIA_METRICS_URL",
+        "http://victoriametrics-victoria-metrics-single-server."
+        "victoriametrics.svc.cluster.local:8428/api/v1/import/prometheus",
+    )
     STREAM = "IOT_DATA"
     SUBJECT = "iot.data"
-    CONSUMER_PUSH = "metrics-consumer-push-v2"
     BATCH_SIZE = int(os.getenv("BATCH_SIZE", "5000"))
-    BATCH_TIMEOUT = float(os.getenv("BATCH_TIMEOUT", "0.02"))
     MAX_CONCURRENT_SENDS = int(os.getenv("MAX_CONCURRENT_SENDS", "32"))
+    WRITE_TIMEOUT_S = float(os.getenv("WRITE_TIMEOUT_S", "30"))
+    NAK_BACKOFF_S = float(os.getenv("NAK_BACKOFF_S", "1.0"))
+    NAK_BACKOFF_MAX_S = float(os.getenv("NAK_BACKOFF_MAX_S", "30.0"))
 
-    msg_seq = 0
+    _nak_backoff = NAK_BACKOFF_S
+
+    def now_ms():
+        return int(time.time() * 1000)
 
     async def setup():
         nc = NATS()
@@ -32,99 +80,122 @@ data:
         for i in range(10):
             try:
                 await js.add_stream(name=STREAM, subjects=[SUBJECT])
-                print(f"Stream: {STREAM}")
+                print("Stream: %s ready" % STREAM)
                 break
             except Exception as e:
-                print(f"Stream attempt {i+1} failed: {e}")
+                print("Stream attempt %d failed: %s" % (i + 1, e))
                 await asyncio.sleep(1)
         return nc, js
 
-    def format_metrics(data, vm_entry_ts):
+    def format_metrics(data, nats_exit_ts, vm_write_ack_ts):
+        """Render one message as a bounded set of Prometheus series.
+
+        Every series is keyed on device_id alone. Nothing emitted here is
+        unbounded -- that is the entire point of the paper's §VI-C fix.
+        """
         device = data.get("device_id", "unknown")
-        lines = []
-        data["nats_exit_ts"] = vm_entry_ts
+        sensor_ts = data.get("ts")
+        data["nats_exit_ts"] = nats_exit_ts
+        data["vm_write_ack_ts"] = vm_write_ack_ts
         if "benthos_entry_ts" in data:
-            data["benthos_to_nats_latency_ms"] = vm_entry_ts - data["benthos_entry_ts"]
+            data["benthos_to_nats_latency_ms"] = nats_exit_ts - data["benthos_entry_ts"]
+        if sensor_ts is not None:
+            data["latency_ms"] = vm_write_ack_ts - sensor_ts
+        lines = []
         for k, v in data.items():
-            if isinstance(v, (int, float)):
-                lines.append(f'iot_sensor_{k}{{device_id="{device}"}} {v}')
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                lines.append('iot_sensor_%s{device_id="%s"} %s' % (k, device, v))
         return lines
 
-    async def send_vm_batch(session, batch):
-        global msg_seq
-        if not batch:
-            return 0
+    async def process_chunk(session, chunk):
+        """Write one chunk and settle every message in it exactly once."""
+        global _nak_backoff
 
-        vm_entry_ts = int(time.time() * 1000)
-        metrics = []
-        for data in batch:
-            msg_seq += 1
-            metrics.extend(format_metrics(data, vm_entry_ts))
+        # Per-message NATS exit stamp, taken before the write.
+        stamped = [(msg, data, now_ms()) for (msg, data) in chunk]
 
+        body = "\n".join(
+            line
+            for _msg, data, exit_ts in stamped
+            for line in format_metrics(data, exit_ts, now_ms())
+        )
+
+        ok = False
         try:
-            async with session.post(VM_URL, data="\n".join(metrics),
-                                    timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status in [200, 204]:
-                    return len(batch)
+            async with session.post(
+                VM_URL,
+                data=body,
+                timeout=aiohttp.ClientTimeout(total=WRITE_TIMEOUT_S),
+            ) as resp:
+                if resp.status in (200, 204):
+                    ok = True
                 else:
                     text = await resp.text()
-                    print(f"VM error: {resp.status} - {text[:200]}")
-                    return 0
+                    print("VM error: %s - %s" % (resp.status, text[:200]))
         except Exception as e:
-            print(f"VM error: {e}")
-            return 0
+            print("VM error: %s" % e)
 
-    async def batch_sender(session, batch_queue, drain_event, inflight):
+        if ok:
+            _nak_backoff = NAK_BACKOFF_S
+        else:
+            _nak_backoff = min(_nak_backoff * 2, NAK_BACKOFF_MAX_S)
+            print(
+                "write failed; nak batch of %d, backing off %.1fs"
+                % (len(chunk), _nak_backoff)
+            )
+            await asyncio.sleep(_nak_backoff)
+
+        for msg, _data in chunk:
+            try:
+                if ok:
+                    await msg.ack()
+                else:
+                    await msg.nak()
+            except Exception as e:
+                print("settle failed: %s" % e)
+
+    async def batch_sender(session, batch_queue):
+        """Single drain path. Polls the queue; chunks by BATCH_SIZE."""
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_SENDS)
 
-        async def send_with_sem(batch):
+        async def guarded(chunk):
             async with semaphore:
-                result = await send_vm_batch(session, batch)
-                inflight["count"] -= 1
-                return result
+                await process_chunk(session, chunk)
 
         while True:
-            await drain_event.wait()
-            drain_event.clear()
             if not batch_queue:
+                await asyncio.sleep(0.002)
                 continue
-
-            sent = 0
-            while batch_queue and inflight["count"] < MAX_CONCURRENT_SENDS * 3:
-                chunk = batch_queue[:BATCH_SIZE]
-                del batch_queue[:BATCH_SIZE]
-                inflight["count"] += 1
-                asyncio.create_task(send_with_sem(chunk))
-                sent += len(chunk)
-                if sent >= BATCH_SIZE * 8:
-                    break
-
-            if batch_queue:
-                asyncio.get_event_loop().call_soon(drain_event.set)
+            chunk = batch_queue[:BATCH_SIZE]
+            del batch_queue[:BATCH_SIZE]
+            await guarded(chunk)
 
     async def main():
-        print(f"Starting NATS consumer (batch mode, batch_size={BATCH_SIZE})...")
+        print("Starting NATS consumer (batch mode, batch_size=%d)" % BATCH_SIZE)
         nc, js = await setup()
-        print(f"Subscribing to {SUBJECT}")
-        sub = await js.subscribe(subject=SUBJECT, stream=STREAM, queue="nats-consumer-group", deliver_policy=DeliverPolicy.NEW)
+        print("Subscribing to %s" % SUBJECT)
+        sub = await js.subscribe(
+            subject=SUBJECT,
+            stream=STREAM,
+            queue="nats-consumer-group",
+            deliver_policy=DeliverPolicy.NEW,
+        )
 
         batch_queue = []
-        drain_event = asyncio.Event()
-        drain_event.set()
-        inflight = {"count": 0}
-
         connector = aiohttp.TCPConnector(limit=200, limit_per_host=200)
         async with aiohttp.ClientSession(connector=connector) as session:
-            asyncio.create_task(batch_sender(session, batch_queue, drain_event, inflight))
-
-            async for msg in sub.messages:
-                try:
-                    d = json.loads(msg.data.decode())
-                    batch_queue.append(d)
-                    drain_event.set()
-                    await msg.ack()
-                except Exception as e:
-                    print(f"Err: {e}")
-                    await msg.nak()
+            sender = asyncio.create_task(batch_sender(session, batch_queue))
+            try:
+                async for msg in sub.messages:
+                    try:
+                        batch_queue.append((msg, json.loads(msg.data.decode())))
+                    except Exception as e:
+                        print("Err: %s" % e)
+                        try:
+                            await msg.nak()
+                        except Exception:
+                            pass
+            finally:
+                sender.cancel()
 
     asyncio.run(main())

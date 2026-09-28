@@ -1,7 +1,26 @@
 ---
+# ArgoCD bootstrap.
+#
+# P0.3 consolidated three conflicting bootstrap definitions into one chain.
+# Previously this playbook duplicated the root Application inline (heredoc),
+# and installed ArgoCD from a chart path that does not exist. There was also
+# an orphan argocd/bootstrap/argocd-install.yaml that nothing referenced.
+#
+# The rule now enforced: this playbook NEVER inlines cluster state. It applies
+# files from the repository by reference, so there is exactly one definition of
+# each object. This is what makes paper §III-A's provenance claim ("every
+# configuration was a tagged commit") actually true.
+#
+#   ansible/argocd-bootstrap.yml   <- this file, orchestrates only
+#     -> argocd/bootstrap/argocd-install.yaml   (installs ArgoCD itself)
+#     -> argocd/root-application.yaml          (the app-of-apps root)
+#
 - name: Install ArgoCD for GitOps
   hosts: rpi-master
   become: true
+  vars:
+    repo_root: "{{ playbook_dir }}/.."
+    argo_chart_version: argo-cd-5.53.0
   tasks:
 
     - name: Wait for K3s to be ready
@@ -14,49 +33,48 @@
     - name: Create argocd namespace
       shell: kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 
-    - name: Apply ArgoCD installation
-      shell: |
-        kubectl apply -k https://github.com/argoproj/argo-helm/manifests/argo-cd?ref=argo-cd-5.53.0
+    # Previously: kubectl apply -k .../argo-helm/manifests/argo-cd?ref=...
+    # The argo-helm repo puts the chart at charts/argo-cd, not manifests/argo-cd,
+    # so this path 404s. It is now applied from argocd/bootstrap/argocd-install.yaml,
+    # which pins the same version and additionally sets the MetalLB address and
+    # the insecure flag that the old heredoc omitted.
+    - name: Apply ArgoCD installation from repo
+      shell: kubectl apply -f {{ repo_root }}/argocd/bootstrap/argocd-install.yaml
+      register: argo_install
 
     - name: Wait for ArgoCD to be ready
       shell: |
         kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=300s
 
-    - name: Apply root application to bootstrap all services
+    # Previously: an inline heredoc copy of the root Application that had drifted
+    # from argocd/root-application.yaml (no LoadBalancer address, no insecure flag).
+    - name: Apply root application from repo
+      shell: kubectl apply -f {{ repo_root }}/argocd/root-application.yaml
+      register: root_app
+
+    - name: Wait for root application to be created
       shell: |
-        cat <<EOF | kubectl apply -f -
-        apiVersion: argoproj.io/v1alpha1
-        kind: Application
-        metadata:
-          name: root
-          namespace: argocd
-        spec:
-          project: default
-          source:
-            repoURL: https://github.com/Sam1rShaban1/k3s-iot-stack
-            targetRevision: main
-            path: argocd/apps
-          destination:
-            server: https://kubernetes.default.svc
-            namespace: argocd
-          syncPolicy:
-            automated:
-              prune: true
-              selfHeal: true
-            syncOptions:
-            - CreateNamespace=true
-            - RespectIgnoreDifferences=true
-        EOF
+        kubectl wait --for=jsonpath='{.status.operationState.phase}'=Succeeded \
+          application/root -n argocd --timeout=180s || \
+          echo "root application sync did not report Succeeded within timeout; inspect with: kubectl get app -n argocd"
+
+    - name: Report sync status
+      shell: kubectl get applications -n argocd -o wide
+      changed_when: false
 
     - name: Display ArgoCD access information
       debug:
         msg: |
-          🎉 ArgoCD GitOps setup complete!
-          
-          Access ArgoCD UI:
-          kubectl port-forward svc/argocd-server -n argocd 8080:80
-          Then open: http://localhost:8080
-          
-          Default credentials: admin/$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath="{.data.password}" | base64 -d)
-          
-          All applications will be automatically deployed via GitOps!
+          ArgoCD GitOps setup complete.
+
+          UI (preferred):
+            kubectl port-forward svc/argocd-server -n argocd 8080:80
+            then open http://localhost:8080
+
+          Or use the MetalLB address pinned in argocd/bootstrap/argocd-install.yaml.
+
+          Admin password:
+            kubectl get secret argocd-initial-admin-secret -n argocd \
+              -o jsonpath='{.data.password}' | base64 -d
+
+          All applications are declared in argocd/apps/ and synced from Git.

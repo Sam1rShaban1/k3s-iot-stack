@@ -25,10 +25,14 @@ spec:
               value: "http://victoriametrics-victoria-metrics-single-server.victoriametrics.svc.cluster.local:8428/api/v1/import/prometheus"
             - name: BATCH_SIZE
               value: "5000"
-            - name: BATCH_TIMEOUT
-              value: "0.02"
+            # P0.4: BATCH_TIMEOUT removed. The previous consumer never read it --
+            # it drained on every incoming message. See the header note in
+            # configmap.yaml. Draining is now a single polling path in
+            # batch_sender(), chunked by BATCH_SIZE.
             - name: MAX_CONCURRENT_SENDS
               value: "32"
+            - name: WRITE_TIMEOUT_S
+              value: "30"
             - name: PYTHONUNBUFFERED
               value: "1"
           resources:
