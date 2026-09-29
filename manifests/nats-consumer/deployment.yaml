@@ -33,6 +33,19 @@ spec:
               value: "32"
             - name: WRITE_TIMEOUT_S
               value: "30"
+            # P0.6: pull consumer. A shared durable lets all replicas consume;
+            # the previous push consumer allowed only one bound subscription,
+            # so 2 of 3 replicas silently did nothing.
+            - name: CONSUMER_DURABLE
+              value: "metrics-consumer-pull"
+            - name: FETCH_TIMEOUT_S
+              value: "1.0"
+            - name: ACK_WAIT_S
+              value: "60"
+            - name: MAX_ACK_PENDING
+              value: "10000"
+            - name: MAX_DELIVER
+              value: "-1"
             - name: PYTHONUNBUFFERED
               value: "1"
           resources:

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -126,19 +127,96 @@ class VMClient:
             return None
         return res.stdout
 
-    def export(self, metric: str) -> Optional[str]:
-        """Raw export payload for one metric, or None on failure."""
-        match = urllib.parse.quote('{__name__="%s"}' % metric)
-        return self._run(f"{self.base_url}/api/v1/export?match[]={match}")
+    def export(
+        self,
+        metric: str,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None,
+        device_pattern: Optional[str] = None,
+    ) -> Optional[str]:
+        """Raw export payload for one metric, or None on failure.
 
-    def collect(self, metric: str) -> list[Sample]:
-        payload = self.export(metric)
+        start_s/end_s and device_pattern are not optional conveniences. Without
+        them the export returns the metric's entire retained history, so a
+        scenario picks up series left by earlier runs. That is not a cosmetic
+        problem: it inflates total_messages and unique_devices, and because
+        throughput is derived from the observed (max-min) timestamp span, the
+        stale samples stretch the window across the whole retention period and
+        the reported throughput collapses to a meaningless figure.
+
+        Every caller measuring a scenario must pass a window and a device
+        pattern.
+        """
+        selector = '{__name__="%s"' % metric
+        if device_pattern:
+            selector += ',device_id=~"%s"' % device_pattern
+        selector += "}"
+        params = {"match[]": selector}
+        if start_s is not None:
+            params["start"] = f"{start_s:.3f}"
+        if end_s is not None:
+            params["end"] = f"{end_s:.3f}"
+        return self._run(
+            f"{self.base_url}/api/v1/export?{urllib.parse.urlencode(params)}"
+        )
+
+    def count_series(self, metric: str) -> Optional[int]:
+        """Number of stored series for one metric, or None if the query fails.
+
+        Deliberately unfiltered and windowless, so it is a valid check for
+        whether a delete actually removed everything. It uses the /series API
+        rather than an instant `count()` query because an instant query only
+        sees the lookbehind window: stale data older than that would be
+        invisible and the check would wrongly report success.
+
+        An exact __name__ match is used. A regex across all iot_* metrics can
+        exceed VictoriaMetrics' -search.max* limits and fail on a large
+        database.
+        """
+        params = {"match[]": '{__name__="%s"}' % metric}
+        payload = self._run(f"{self.base_url}/api/v1/series?{urllib.parse.urlencode(params)}")
+        if payload is None:
+            return None
+        try:
+            doc = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+        if doc.get("status") != "success":
+            return None
+        data = doc.get("data")
+        return len(data) if isinstance(data, list) else None
+
+    def collect(
+        self,
+        metric: str,
+        start_s: Optional[float] = None,
+        end_s: Optional[float] = None,
+        device_pattern: Optional[str] = None,
+    ) -> list[Sample]:
+        payload = self.export(metric, start_s, end_s, device_pattern)
         if payload is None:
             return []
         return parse_export(payload)
 
     def delete_series(self, name_pattern: str = "iot_.*") -> bool:
-        data = urllib.parse.urlencode({"match[]": '__name__=~"%s"' % name_pattern})
+        """Request deletion of matching series.
+
+        The match must be a full selector with braces. VictoriaMetrics rejects
+        a bare `__name__=~"..."` with HTTP 400 and the text 'unexpected token
+        "=~"', and that rejection is silent from the caller's point of view
+        because the old code discarded the return value. So the database was
+        never actually cleared: every scenario inherited the entire retained
+        history of every previous run.
+
+        Returns True only if VictoriaMetrics accepted the request. It does NOT
+        mean the data is gone: delete_series is applied in the background, so
+        the series can still be returned by queries for a short while after a
+        200. Callers that need the data to be absent must poll with
+        count_samples, or scope their queries so that leftover series cannot
+        affect the result.
+        """
+        selector = name_pattern if name_pattern.startswith("__name__") else f'__name__=~"{name_pattern}"'
+        data = urllib.parse.urlencode({"match[]": "{%s}" % selector})
         res = subprocess.run(
             [
                 "curl",
@@ -158,6 +236,34 @@ class VMClient:
             check=False,
         )
         return res.stdout.strip() in ("200", "204")
+
+    def wait_for_delete(
+        self,
+        metric: str,
+        timeout_s: int = 60,
+        poll_s: float = 2.0,
+    ) -> tuple[bool, Optional[int]]:
+        """Poll until no series remain for `metric`, or the timeout expires.
+
+        Returns (cleared, remaining_series). `cleared` is False when the wait
+        timed out, which the runner reports as a warning. Measurement is still
+        correct because queries are scoped by window and device, but a database
+        that will not clear is a real problem worth surfacing.
+
+        `remaining_series` is None when the check itself could not be
+        performed, which is different from "empty" and must not be read as it.
+        """
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining = self.count_series(metric)
+            if remaining is None:
+                # Cannot verify. Report not-cleared rather than claiming success.
+                return False, None
+            if remaining == 0:
+                return True, 0
+            if time.monotonic() >= deadline:
+                return False, remaining
+            time.sleep(poll_s)
 
     def total_series(self) -> Optional[int]:
         payload = self._run(f"{self.base_url}/api/v1/status/tsdb")

@@ -52,7 +52,15 @@ data:
     import os
     import aiohttp
     from nats.aio.client import Client as NATS
-    from nats.js.api import DeliverPolicy
+    from nats.js.api import AckPolicy, ConsumerConfig
+
+    # nats-py 2.14 puts TimeoutError in nats.errors, not nats.js.errors, and
+    # has no EmptyError at all. Import defensively so a version change in the
+    # base image cannot crash the consumer at import time.
+    try:
+        from nats.errors import TimeoutError as NatsTimeoutError
+    except ImportError:  # pragma: no cover
+        NatsTimeoutError = asyncio.TimeoutError
 
     NATS_URL = os.getenv("NATS_URL", "nats://nats.nats.svc.cluster.local:4222")
     VM_URL = os.getenv(
@@ -67,6 +75,14 @@ data:
     WRITE_TIMEOUT_S = float(os.getenv("WRITE_TIMEOUT_S", "30"))
     NAK_BACKOFF_S = float(os.getenv("NAK_BACKOFF_S", "1.0"))
     NAK_BACKOFF_MAX_S = float(os.getenv("NAK_BACKOFF_MAX_S", "30.0"))
+    # Pull-consumer parameters. P0.6: the durable is shared by every replica so
+    # JetStream distributes batches between them.
+    DURABLE = os.getenv("CONSUMER_DURABLE", "metrics-consumer-pull")
+    FETCH_TIMEOUT_S = float(os.getenv("FETCH_TIMEOUT_S", "1.0"))
+    ACK_WAIT_S = float(os.getenv("ACK_WAIT_S", "60"))
+    MAX_ACK_PENDING = int(os.getenv("MAX_ACK_PENDING", "10000"))
+    # -1 == redeliver indefinitely, which is what paper section VII describes.
+    MAX_DELIVER = int(os.getenv("MAX_DELIVER", "-1"))
 
     _nak_backoff = NAK_BACKOFF_S
 
@@ -171,14 +187,35 @@ data:
             await guarded(chunk)
 
     async def main():
-        print("Starting NATS consumer (batch mode, batch_size=%d)" % BATCH_SIZE)
+        print("Starting NATS consumer (pull mode, batch_size=%d)" % BATCH_SIZE)
         nc, js = await setup()
-        print("Subscribing to %s" % SUBJECT)
-        sub = await js.subscribe(
+
+        # P0.6: this was a PUSH consumer (js.subscribe with a queue group).
+        # A push consumer has exactly ONE bound subscription, so with replicas: 3
+        # two of the three replicas block in subscribe() and never consume --
+        # the pipeline silently scaled at 1x regardless of the replica count.
+        # Symptoms seen during recovery: replicas stuck after "Subscribing to
+        # iot.data", and JetStreamError "consumer is already bound to a
+        # subscription" when a replica restarted.
+        #
+        # A PULL consumer lets every replica share the durable and have the
+        # server distribute batches between them, which is the behaviour the
+        # Deployment's replica count was always meant to provide.
+        print("Creating pull subscription for %s (durable=%s)" % (SUBJECT, DURABLE))
+        sub = await js.pull_subscribe(
             subject=SUBJECT,
+            durable=DURABLE,
             stream=STREAM,
-            queue="nats-consumer-group",
-            deliver_policy=DeliverPolicy.NEW,
+            config=ConsumerConfig(
+                ack_policy=AckPolicy.EXPLICIT,
+                max_deliver=MAX_DELIVER,
+                # nats-py 2.14 takes ack_wait in SECONDS and multiplies by
+                # 1e9 itself. Passing nanoseconds overflows to 6e19 and the
+                # server rejects it; passing a timedelta fails in the client's
+                # int() conversion. Verified empirically against 2.14.0.
+                ack_wait=ACK_WAIT_S,
+                max_ack_pending=MAX_ACK_PENDING,
+            ),
         )
 
         batch_queue = []
@@ -186,15 +223,36 @@ data:
         async with aiohttp.ClientSession(connector=connector) as session:
             sender = asyncio.create_task(batch_sender(session, batch_queue))
             try:
-                async for msg in sub.messages:
+                fetches = 0
+                while True:
                     try:
-                        batch_queue.append((msg, json.loads(msg.data.decode())))
+                        msgs = await sub.fetch(
+                            batch=BATCH_SIZE, timeout=FETCH_TIMEOUT_S
+                        )
+                        fetches += 1
+                        if fetches % 20 == 1:
+                            print("fetch ok: %d msgs (total fetches %d)"
+                                  % (len(msgs) if msgs else 0, fetches))
+                    except (asyncio.TimeoutError, NatsTimeoutError):
+                        continue
                     except Exception as e:
-                        print("Err: %s" % e)
+                        # P0.6: nats-py raises its own TimeoutError, not
+                        # asyncio's, so a quiet pull loop previously looked
+                        # identical to a healthy idle one. Report the type.
+                        print("fetch error %s: %s" % (type(e).__name__, e))
+                        await asyncio.sleep(1.0)
+                        continue
+                    if not msgs:
+                        continue
+                    for msg in msgs:
                         try:
-                            await msg.nak()
-                        except Exception:
-                            pass
+                            batch_queue.append((msg, json.loads(msg.data.decode())))
+                        except Exception as e:
+                            print("Err: %s" % e)
+                            try:
+                                await msg.nak()
+                            except Exception:
+                                pass
             finally:
                 sender.cancel()
 

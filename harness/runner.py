@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config as cfg
+from . import nats as natsctl
 from .collect import Sample, VMClient
 from .report import build_scenario_report
 
@@ -120,11 +122,28 @@ def stop_publishers(procs: list[subprocess.Popen]) -> None:
 
 
 def collect_scenario(
-    vm: VMClient, paths: RunPaths, scenario: str, metrics: list[str]
+    vm: VMClient,
+    paths: RunPaths,
+    scenario: str,
+    metrics: list[str],
+    start_s: float | None = None,
+    end_s: float | None = None,
+    device_pattern: str | None = None,
 ) -> dict[str, list[Sample]]:
+    """Export samples for one scenario, scoped to its window and devices.
+
+    The window and device filter are what make a scenario's numbers mean
+    something. Querying by metric name alone returns the whole retained
+    history, so series from earlier runs are counted as this scenario's
+    traffic, and their older timestamps stretch the observed write window
+    across the entire retention period. That combination produced a reported
+    throughput of 30 msg/s for a run that actually delivered ~494 msg/s.
+    """
     out: dict[str, list[Sample]] = {}
     for metric in metrics:
-        payload = vm.export(metric)
+        payload = vm.export(
+            metric, start_s=start_s, end_s=end_s, device_pattern=device_pattern
+        )
         if payload is None:
             print(f"  WARN could not export {metric}")
             out[metric] = []
@@ -202,6 +221,9 @@ def run(
     print()
 
     reports = []
+    nats_result = natsctl.NatsResult(
+        False, detail="not attempted (clearing disabled for this run)"
+    )
     # Use the absolute path ensure_publisher resolved. Re-deriving it from the
     # config value yields a bare "publisher", which subprocess looks for in
     # PATH instead of the working directory.
@@ -210,19 +232,68 @@ def run(
         name = cfg.HarnessConfig.scenario_name(clients, rate)
         print(f"[{name}] target {rate} msg/s across {clients} clients")
         if clear_before_each:
-            vm.delete_series("iot_.*")
+            # Clear BOTH stores. Clearing only VictoriaMetrics leaves the
+            # JetStream backlog intact and the consumer then spends the
+            # scenario replaying it -- see harness/nats.py for the failure
+            # mode this produced.
+            accepted = vm.delete_series("iot_.*")
+            if not accepted:
+                print("  WARNING VictoriaMetrics rejected delete_series")
+            nats_result = natsctl.purge_stream()
+            if nats_result.purged:
+                print(
+                    f"  cleared: VM + NATS stream "
+                    f"(had {nats_result.messages_before} retained)"
+                )
+            else:
+                print(f"  WARNING {nats_result.detail}")
+            # delete_series is applied in the background, so a 200 does not
+            # mean the data is already gone. Wait for it, because the run's
+            # own numbers depend on the database starting empty.
+            cleared, remaining = vm.wait_for_delete(cfg.METRIC_LATENCY)
+            if cleared:
+                print("  VM confirmed empty")
+            elif remaining is None:
+                print(
+                    "  WARNING could not verify the VictoriaMetrics delete; "
+                    "measurements are still scoped to this run's window and "
+                    "devices, but the database may hold earlier data"
+                )
+            else:
+                print(
+                    f"  WARNING VM still holds {remaining} series for "
+                    f"{cfg.METRIC_LATENCY}; measurements are scoped to this "
+                    f"run's window and devices, but the database is not cleared"
+                )
             time.sleep(5)
 
+        # Record the measurement window before publishing, and include the
+        # settle period at the end, so every sample this scenario produces
+        # falls inside the query bounds.
+        window_start = time.time()
         procs = spawn_publishers(
             publisher_bin, conf, clients, rate, paths.run_id, qos,
             conf.test_duration_s,
         )
         time.sleep(conf.test_duration_s)
         stop_publishers(procs)
-        print(f"  publishers stopped, settling 15s")
+        print("  publishers stopped, settling 15s")
         time.sleep(15)
+        window_end = time.time()
 
-        collected = collect_scenario(vm, paths, name, cfg.ALL_METRICS)
+        # Device IDs are 'sensor_<scenario>_<index>_<run_id>_<pid>_<nanos>'.
+        # The trailing .* is required: VictoriaMetrics anchors a label regex to
+        # the whole value, so a pattern without it matches nothing at all and
+        # the scenario silently reports zero messages.
+        device_pattern = (
+            f".*_{re.escape(name)}_[0-9]+_{re.escape(paths.run_id)}_.*"
+        )
+        collected = collect_scenario(
+            vm, paths, name, cfg.ALL_METRICS,
+            start_s=window_start,
+            end_s=window_end + 1,
+            device_pattern=device_pattern,
+        )
         latency_samples, latency_metric = pick_latency(collected)
         inter = collected.get(cfg.METRIC_LATENCY) or collected.get(cfg.METRIC_NATS_EXIT)
 
@@ -239,6 +310,7 @@ def run(
             inter_arrival_samples=inter,
             test_duration_s=conf.test_duration_s,
         )
+        report["results"].update(nats_result.as_metadata())
         report_path = paths.results / f"{name}_report.json"
         report_path.write_text(json.dumps(report, indent=2))
         reports.append(report)
@@ -266,6 +338,9 @@ def run(
         "nodes": conf.nodes,
         "node_count": conf.node_count,
         "latency_metric": reports[0]["results"]["latency_metric"] if reports else None,
+        "nats_purged_all_scenarios": all(
+            r["results"].get("nats_purged") for r in reports
+        ) if reports else False,
         "total_scenarios": len(reports),
         "scenarios": [
             {
