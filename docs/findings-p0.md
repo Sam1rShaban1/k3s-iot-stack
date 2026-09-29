@@ -153,3 +153,203 @@ A pod restart is survivable, but a failed write is not.
 Fixed in P0.4: ack after a successful write, nak with bounded backoff on failure.
 The durability claim is now true and worth re-verifying in P1 with fault
 injection.
+
+---
+
+## D9 — the harness never cleared VictoriaMetrics, and never scoped its queries
+
+Found on 2026-09-29 while validating the P0 harness against the live cluster. A
+20 s, 10-client, 500 msg/s scenario reported **22,335 stored messages across 20
+devices at 30.04 msg/s (6.01% efficiency)**. The pipeline had actually delivered
+9,856 messages across 10 devices at ~503 msg/s.
+
+### Two independent defects, one visible symptom
+
+**(a) `delete_series` silently failed with HTTP 400.** The request sent
+
+```
+match[]=__name__=~"iot_.*"
+```
+
+VictoriaMetrics parses `match[]` as a *full selector* and rejects the unbraced
+form with `identExpr: unexpected token "=~"`. The caller discarded the return
+value, so a 400 looked identical to a success from the harness's point of view
+and the database was never cleared.
+
+**(b) `export()` queried by metric name only.** No time window, no device
+filter, so every export returned the metric's entire retained history.
+
+The combination inflated `total_messages` and `unique_devices` with another
+run's series. It also corrupted throughput, which is not a count but a ratio:
+the report derives the denominator from the observed `(max - min)` timestamp
+span, so stale samples 27 days old stretched that span across the whole
+retention period. 22,335 samples over a 743 s span is 30.04 msg/s.
+
+### A third, separate trap
+
+The device filter needs a trailing `.*`. VictoriaMetrics anchors a
+`label=~"..."` regex to the **entire** label value, so
+
+```
+device_id=~".*_10c_500r_.*_run_20260929_104711"      -> 0 bytes
+device_id=~".*_10c_500r_.*_run_20260929_104711._.*" -> 175,603 bytes
+```
+
+The unanchored form silently matched nothing, which would have made every
+scenario report zero messages. The harness now uses
+`.*_<scenario>_[0-9]+_<run_id>_.*`, verified against the live cluster to
+exclude other runs, other scenarios of the same run, and stale series.
+
+### Scope: does this invalidate the paper-1 corpus?
+
+**No.** `harness/collect.py` was *added* in commit `96c216d` (P0). The
+pre-harness `run_test.sh` sent the correctly braced form:
+
+```
+curl -X POST .../api/v1/admin/tsdb/delete_series -d 'match[]={__name__=~"iot_.*"}'
+```
+
+so the database **was** cleared before each historical scenario. The old script
+did use a 5-minute rolling lookback window, but because the delete succeeded,
+that window only ever contained the current scenario. The retained numbers are
+consistent with this: `10c_500r` stored 29,770 messages at 498.6 msg/s, an
+effective span of 59.7 s against a nominal 60 s, so no adjacent scenario's data
+was included.
+
+This defect is confined to the new harness and is fixed before it produced any
+published result.
+
+### Resolution
+
+- `delete_series` sends a braced selector and the runner checks the result.
+- `export()` requires a time window and a device pattern; the docstring
+  explains why omitting them invalidates the numbers.
+- `wait_for_delete()` polls the `/api/v1/series` API until the store is
+  genuinely empty, and distinguishes "checked and empty" (0) from "could not
+  check" (`None`). An instant `count()` query was rejected for this purpose
+  because it only sees the lookbehind window, so data older than that would be
+  invisible and the check would wrongly report success.
+- 23 regression tests in `harness/tests/test_collect_scoping.py`, including one
+  that reproduces the 22,335 / 20-device / 30 msg/s corruption in-sample and
+  asserts the scoped result is 9,875 / 10 devices / >400 msg/s.
+
+Verified live before and after, same scenario:
+
+| | stored | devices | throughput | efficiency |
+|---|---|---|---|---|
+| before | 22,335 | 20 | 30.04 msg/s | 6.01% |
+| after | 9,856 | 10 | 503.09 msg/s | 100.62% |
+
+---
+
+## D10 — the historical corpus never purged the JetStream backlog
+
+`run_test.sh` cleared VictoriaMetrics but had no equivalent for JetStream. A
+message is retained until acknowledged, so any backlog accumulated by an
+interrupted run, or by a period when the consumer was not keeping up, remained
+in the stream and was replayed during the following scenario.
+
+The consumer acked on enqueue rather than after the write (D8), so in the
+deployed configuration the backlog drained faster than the intended
+at-least-once semantics, which limited the effect. It was not eliminated
+though, and the size of any backlog at the start of each historical scenario is
+**not recoverable from the retained data**.
+
+The symptom is well characterised, though, because it was observed directly
+during P0.6: a 500 msg/s scenario read 36% efficiency while the consumer
+drained a backlog from earlier runs, and the same scenario read 99.68% after a
+purge.
+
+**Consequence for the paper.** Historical per-scenario latency figures may be
+inflated by replay, concentrated in the earliest scenario of each run and
+wherever the consumer fell behind. This cannot be quantified from the retained
+corpus and must be stated as a limitation rather than corrected. The
+re-instrumented runs scheduled in P1/P2 purge the stream and record
+`nats_messages_before` for every scenario, so the effect becomes auditable
+going forward.
+
+---
+
+## D11 — `latency_ms` did not measure end-to-end latency, and the fetch cadence dominated it
+
+Found on 2026-09-29 while investigating a bimodal latency distribution. Two
+independent defects, both in code added during P0, both of which changed the
+headline latency numbers by roughly an order of magnitude.
+
+### (a) The acknowledgement stamp was taken before the write it acknowledged
+
+`format_metrics()` was documented as:
+
+> Added `vm_write_ack_ts`, stamped after the VictoriaMetrics POST returns.
+
+It was not. The call site was
+
+```python
+body = "\n".join(
+    line for _msg, data, exit_ts in stamped
+    for line in format_metrics(data, exit_ts, now_ms())   # <-- here
+)
+# ... only then:
+async with session.post(VM_URL, data=body) as resp:
+```
+
+`now_ms()` is evaluated while the request body is still being assembled, so
+`vm_write_ack_ts` was a *write-start* timestamp. Since
+`latency_ms = vm_write_ack_ts - sensor ts`, the reported metric excluded the
+entire VictoriaMetrics write, and the paper's central claim — that §VIII-A's
+future work of "unified end-to-end latency measurement" is now solved — was
+measuring something else. This is the same class of error as D7, where a
+timestamp was stamped at the wrong point in the pipeline.
+
+**Fix.** Split the write into two passes, because the value cannot exist until
+the request carrying the payload has returned:
+
+1. `format_metrics(data, nats_exit_ts)` — payload, no ack stamp.
+2. POST, and on success take `ack_ts = now_ms()`.
+3. `format_metrics_ack(data, ack_ts)` — emits `vm_write_ack_ts` and
+   `latency_ms`.
+4. POST again, then `ack()`.
+
+The payload is already durable when pass 2 runs, so a failure there costs the
+latency series and not the measurement; the consumer reports that rather than
+hiding it. Four regression tests pin the ordering, including one that asserts
+`ack_ts = now_ms()` appears *after* the first `session.post` in the AST.
+
+### (b) `FETCH_TIMEOUT_S=1.0` set a floor under measured latency
+
+The pull consumer requests `sub.fetch(batch=5000, timeout=1.0)`. Below 5,000
+msg/s the batch never fills, so every fetch returned a partial batch only after
+the full one-second timeout. A message's wait was therefore dominated by where
+it fell in the fetch cycle, not by the pipeline.
+
+The signature was unmistakable once the reporting bugs were fixed: a flat ramp
+from 10 ms to 1 s with 2,944 samples in the 500 ms–1 s bucket and `max_ms` of
+1,011. That is a periodic timer, not a pipeline.
+
+**Fix.** `FETCH_TIMEOUT_S=0.05`, so a partial batch returns promptly while
+batching still amortises the write.
+
+### Measured effect, same scenario (10 clients, 500 msg/s, 20 s)
+
+| | avg | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| `FETCH_TIMEOUT=1.0`, stamp before write | 322 ms | 210 ms | 925 ms | 993 ms | 1011 ms |
+| `FETCH_TIMEOUT=0.05`, stamp before write | 108 ms | 34 ms | 652 ms | 936 ms | 1109 ms |
+| `FETCH_TIMEOUT=0.05`, stamp after write | **25–28 ms** | **17–18 ms** | **62–78 ms** | **105–189 ms** | **268–342 ms** |
+
+The last row is the first one that measures what it claims. Throughput is
+unaffected at 99.4–99.6% of target across all three, so this is a latency
+result and not a throughput trade.
+
+### Consequence for the paper
+
+All historical latency figures carry up to ~1 s of consumer-side fetch delay
+that is an artefact of `FETCH_TIMEOUT_S=1.0`, and none of them can be
+reconstructed as sensor-to-write-acknowledged because `vm_write_ack_ts` did not
+exist in the deployed consumer at the time. The historical corpus remains valid
+for **throughput and message-count** claims. Latency must be quoted from the
+re-instrumented runs only, with the fetch timeout stated.
+
+The corrected distribution (p50 17 ms, p99 ~105–189 ms) is a far more
+plausible result for a five-node Raspberry Pi cluster, and it is the first
+end-to-end latency measurement this pipeline has actually produced.

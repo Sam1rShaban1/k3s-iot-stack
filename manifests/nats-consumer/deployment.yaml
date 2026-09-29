@@ -38,8 +38,15 @@ spec:
             # so 2 of 3 replicas silently did nothing.
             - name: CONSUMER_DURABLE
               value: "metrics-consumer-pull"
+            # How long a pull fetch waits for a full BATCH_SIZE before
+            # returning whatever has arrived. This is the dominant term in
+            # measured end-to-end latency: with 1.0 the reported p99 was 993 ms
+            # and the distribution was a flat ramp from 10 ms to 1 s, which
+            # describes the fetch cadence rather than the pipeline. At 0.05 a
+            # partial batch returns promptly and batching still amortises the
+            # VictoriaMetrics write. See docs/findings-p0.md D11.
             - name: FETCH_TIMEOUT_S
-              value: "1.0"
+              value: "0.05"
             - name: ACK_WAIT_S
               value: "60"
             - name: MAX_ACK_PENDING

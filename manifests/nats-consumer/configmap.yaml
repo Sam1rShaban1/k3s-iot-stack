@@ -13,7 +13,12 @@ data:
   #    message in it, so the NATS->consumer stage was quantised to the batch
   #    and could not be measured per message.
   #
-  # 2. Added vm_write_ack_ts, stamped after the VictoriaMetrics POST returns.
+  # 2. Added vm_write_ack_ts, stamped after the VictoriaMetrics POST returns,
+  #    and written in a SECOND request. It cannot ride in the first request's
+  #    body, because the value does not exist until that request has returned.
+  #    The first attempt at this put now_ms() in the body-building expression,
+  #    which stamped it before the POST and made latency_ms measure
+  #    sensor -> write-start instead of sensor -> write-acknowledged.
   #    Paper §VIII-A lists "unified end-to-end latency measurement" as future
   #    work, because 5-node P99 was inter-arrival time rather than
   #    sensor->storage. This makes end-to-end measurable and identical across
@@ -30,8 +35,7 @@ data:
   #    three timestamps at once, so it publishes the answer directly as one
   #    bounded series. Paper §VI-C's prescription, applied literally --
   #    bounded labels for aggregation, unbounded identifiers to traces.
-  #    Cardinality cost: +1 series per device. Still bounded.
-  #
+  #    Cardinality cost: +1 series per device. Still bounded.  #
   # 4. ack() now happens AFTER a successful write, not on enqueue. Previously
   #    messages were acked the moment they were queued, so a failed write lost
   #    them permanently and max_deliver: -1 could never redeliver. That made
@@ -103,20 +107,41 @@ data:
                 await asyncio.sleep(1)
         return nc, js
 
-    def format_metrics(data, nats_exit_ts, vm_write_ack_ts):
+    def format_metrics(data, nats_exit_ts):
         """Render one message as a bounded set of Prometheus series.
 
         Every series is keyed on device_id alone. Nothing emitted here is
         unbounded -- that is the entire point of the paper's §VI-C fix.
+
+        The acknowledgement timestamp is deliberately absent. It cannot be
+        known until the write carrying these samples has returned, so emitting
+        it here would mean stamping it *before* the POST. The previous version
+        did exactly that while the field was documented as "stamped after the
+        VictoriaMetrics POST returns", which made latency_ms measure
+        sensor -> write-start and silently exclude the entire write -- the very
+        quantity the paper claims to measure end to end. See format_metrics_ack.
         """
         device = data.get("device_id", "unknown")
-        sensor_ts = data.get("ts")
         data["nats_exit_ts"] = nats_exit_ts
-        data["vm_write_ack_ts"] = vm_write_ack_ts
         if "benthos_entry_ts" in data:
             data["benthos_to_nats_latency_ms"] = nats_exit_ts - data["benthos_entry_ts"]
+        return _render(data, device)
+
+    def format_metrics_ack(data, ack_ts):
+        """Second pass: acknowledgement stamps, written after the POST returns.
+
+        Carries vm_write_ack_ts and latency_ms only. The payload is already
+        stored by the time this runs, so a failure here costs the latency
+        series rather than the measurement.
+        """
+        device = data.get("device_id", "unknown")
+        data["vm_write_ack_ts"] = ack_ts
+        sensor_ts = data.get("ts")
         if sensor_ts is not None:
-            data["latency_ms"] = vm_write_ack_ts - sensor_ts
+            data["latency_ms"] = ack_ts - sensor_ts
+        return _render(data, device)
+
+    def _render(data, device):
         lines = []
         for k, v in data.items():
             if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -130,13 +155,15 @@ data:
         # Per-message NATS exit stamp, taken before the write.
         stamped = [(msg, data, now_ms()) for (msg, data) in chunk]
 
+        # Pass 1: the payload itself, with no acknowledgement timestamp.
         body = "\n".join(
             line
             for _msg, data, exit_ts in stamped
-            for line in format_metrics(data, exit_ts, now_ms())
+            for line in format_metrics(data, exit_ts)
         )
 
         ok = False
+        ack_ts = None
         try:
             async with session.post(
                 VM_URL,
@@ -145,6 +172,8 @@ data:
             ) as resp:
                 if resp.status in (200, 204):
                     ok = True
+                    # Taken here, after the server accepted the write.
+                    ack_ts = now_ms()
                 else:
                     text = await resp.text()
                     print("VM error: %s - %s" % (resp.status, text[:200]))
@@ -153,6 +182,23 @@ data:
 
         if ok:
             _nak_backoff = NAK_BACKOFF_S
+            # Pass 2: acknowledgement stamps, so latency_ms really is
+            # sensor -> write acknowledged.
+            ack_body = "\n".join(
+                line
+                for _msg, data, _exit_ts in stamped
+                for line in format_metrics_ack(data, ack_ts)
+            )
+            try:
+                async with session.post(
+                    VM_URL,
+                    data=ack_body,
+                    timeout=aiohttp.ClientTimeout(total=WRITE_TIMEOUT_S),
+                ) as resp:
+                    if resp.status not in (200, 204):
+                        print("VM ack-stamp write rejected: %s" % resp.status)
+            except Exception as e:
+                print("VM ack-stamp write failed: %s" % e)
         else:
             _nak_backoff = min(_nak_backoff * 2, NAK_BACKOFF_MAX_S)
             print(
