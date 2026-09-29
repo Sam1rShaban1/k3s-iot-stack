@@ -1,32 +1,42 @@
 """NATS JetStream control for the benchmark harness.
 
-Why this exists
----------------
-The harness originally cleared only VictoriaMetrics before each scenario. That
-is not sufficient, and the omission silently invalidates every measurement.
+Why purging exists
+------------------
+JetStream can retain messages a consumer has already acknowledged, and this
+stream is configured to do exactly that. IOT_DATA is created with
+``retention: limits`` and no ``max_msgs``, ``max_age`` or ``max_bytes``, so
+nothing is ever evicted and ``stream.state.messages`` is a count of everything
+ever published, not a backlog.
 
-JetStream retains published messages until they are acknowledged. The consumer
-acknowledges after writing, so a message that has not yet been consumed is
-still in the stream. Clearing VictoriaMetrics does not touch that backlog. On a
-cluster where the consumer is running at fewer replicas than configured, or
-where a previous run was interrupted, the stream accumulates thousands of
-unconsumed messages. The next scenario's consumer then spends its time
-replaying that backlog while the fresh messages queue behind it, so:
+That has two consequences the harness has to respect.
 
-  * measured latency reflects replay, not the offered load;
-  * measured throughput is depressed by work that belongs to an earlier run;
-  * the latency distribution is bimodal for reasons that have nothing to do
-    with the pipeline.
+1. **Bounded storage per run.** Without a purge, retained history from every
+   earlier scenario is still resident when the next one starts, and the
+   measurements have to work around it.
+2. **Consumer replay after a durable is recreated.** A pull consumer with
+   ``deliver_policy: all`` starts at the beginning of the stream. If the
+   durable is deleted or recreated -- a pod restart with a fresh name, a
+   config change, a rebuilt JetStream store -- it replays the entire retained
+   history while the new scenario's messages queue behind it. Measured
+   throughput then reflects replay rather than the offered load.
 
-Observed directly during P0.6: a 500 msg/s scenario reported 36% efficiency
-because the consumer was draining a backlog accumulated across several earlier
-runs, not because the pipeline was slow. After purging the stream, the same
-scenario delivered 99.68%.
+Purge is therefore part of establishing a clean measurement, alongside clearing
+the database, and the report records whether it happened so an unclean run is
+distinguishable from a clean one.
 
-So purging the stream is part of establishing a clean measurement, alongside
-clearing the database. The report records which of the two happened, so a run
-whose stream could not be purged is distinguishable from a clean one rather
-than quietly misread.
+What "backlog" means here
+-------------------------
+Two different numbers, and conflating them caused a real error. See D13.
+
+* ``unconsumed()`` -- ``num_pending + num_ack_pending``: published but not yet
+  acknowledged. This is the number that says whether a consumer is replaying.
+* ``retained()`` -- ``stream.state.messages``: what the server is still
+  storing. It never falls on ack, and it grows without bound on this stream.
+
+An early version of this module reported ``state.messages`` as "backlog" and
+used it to decide a run was contaminated. That is wrong: it flagged every run
+after the first, including ones whose consumer was provably idle
+(``num_pending=0``, ``delivered.stream_seq == stream.last_seq``).
 
 How the purge is performed
 -------------------------
@@ -36,9 +46,9 @@ tries two routes in order:
 
   1. direct  -- nats-py from the harness process, if HARNESS_NATS_URL is
      reachable from wherever the harness runs.
-  2. in-cluster -- ``kubectl exec`` a small purge snippet into an existing
-     consumer pod, which already has nats-py and cluster DNS. This is the
-     normal path for a laptop-driven harness.
+  2. in-cluster -- ``kubectl exec`` a small snippet into an existing consumer
+     pod, which already has nats-py and cluster DNS. This is the normal path
+     for a laptop-driven harness.
 
 Force either one with HARNESS_NATS_MODE=direct|incluster.
 
@@ -58,11 +68,13 @@ measurements in the first place.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from dataclasses import dataclass
 
 STREAM = "IOT_DATA"
+DURABLE = "metrics-consumer-pull"
 
 # Pod namespace searched by the in-cluster path.
 CONSUMER_NAMESPACE = "nats-consumer"
@@ -84,13 +96,106 @@ class NatsResult:
         }
 
 
+@dataclass
+class JetStreamStats:
+    """Stream retention and consumer position, which are different things.
+
+    retained  -- messages the server still stores. With retention=limits and no
+                 max_msgs/max_age/max_bytes this grows forever; acking does not
+                 remove a message.
+    unconsumed-- num_pending + num_ack_pending, i.e. published but not yet
+                 acknowledged. This is the number that says whether a consumer
+                 is replaying earlier work.
+    """
+
+    retained: int
+    num_pending: int
+    num_ack_pending: int
+    num_redelivered: int
+    bytes_stored: int
+    retention: str
+    max_msgs: int
+    max_age: float
+    max_bytes: int
+
+    @property
+    def unconsumed(self) -> int:
+        """Published but not yet acknowledged.
+
+        Derived rather than stored so it cannot disagree with the two fields it
+        is defined from.
+        """
+        return self.num_pending + self.num_ack_pending
+
+    def as_metadata(self) -> dict:
+        return {
+            "nats_retained": self.retained,
+            "nats_unconsumed": self.unconsumed,
+            "nats_num_pending": self.num_pending,
+            "nats_num_ack_pending": self.num_ack_pending,
+            "nats_num_redelivered": self.num_redelivered,
+            "nats_bytes_stored": self.bytes_stored,
+            "nats_retention": self.retention,
+            "nats_max_msgs": self.max_msgs,
+            "nats_max_age": self.max_age,
+            "nats_max_bytes": self.max_bytes,
+        }
+
+    @property
+    def unbounded(self) -> bool:
+        """True when nothing will ever evict a message from this stream."""
+        return (
+            self.max_msgs in (-1, 0)
+            and self.max_age in (0, 0.0)
+            and self.max_bytes in (-1, 0)
+        )
+
+
+async def _read_stats(js, stream: str, durable: str) -> JetStreamStats:
+    """Build JetStreamStats from a live JetStream context.
+
+    Shared by the direct and in-cluster routes so both read identical fields.
+
+    A missing consumer is reported as zero unconsumed rather than an error: the
+    question the harness asks is "is there work outstanding for the consumer",
+    and no consumer means none is. The purge is what a run needs then.
+    """
+    info = await js.stream_info(stream)
+    state = info.state
+    num_pending = num_ack = num_redelivered = 0
+    try:
+        ci = await js.consumer_info(stream, durable)
+        num_pending = int(ci.num_pending or 0)
+        num_ack = int(ci.num_ack_pending or 0)
+        num_redelivered = int(ci.num_redelivered or 0)
+    except Exception:  # noqa: BLE001
+        pass
+    cfg = info.config
+    return JetStreamStats(
+        retained=int(state.messages or 0),
+        num_pending=num_pending,
+        num_ack_pending=num_ack,
+        num_redelivered=num_redelivered,
+        bytes_stored=int(state.bytes or 0),
+        retention=str(getattr(cfg, "retention", "") or ""),
+        max_msgs=int(getattr(cfg, "max_msgs", -1) or -1),
+        max_age=float(getattr(cfg, "max_age", 0) or 0),
+        max_bytes=int(getattr(cfg, "max_bytes", -1) or -1),
+    )
+
+
+def _durable() -> str:
+    return os.environ.get("HARNESS_NATS_DURABLE", DURABLE)
+
+
 def _config(stream: str) -> dict:
     return {
         "servers": [os.environ.get("HARNESS_NATS_URL", f"nats://nats.{CONSUMER_NAMESPACE}.svc.cluster.local:4222")],
         "user": os.environ.get("HARNESS_NATS_USER") or None,
         "password": os.environ.get("HARNESS_NATS_PASSWORD") or None,
         "token": os.environ.get("HARNESS_NATS_TOKEN") or None,
-        "stream": os.environ.get("HARNESS_NATS_STREAM", stream),
+        "stream": _resolve_stream(stream),
+        "durable": _durable(),
     }
 
 
@@ -131,14 +236,16 @@ async def main():
 asyncio.run(main())
 """
 
-# Read-only counterpart of _IN_CLUSTER_SNIPPET, used to size the backlog without
-# mutating it. The stream name is passed through the environment rather than
-# interpolated into the source, so there is no string-splicing into Python.
-_BACKLOG_SNIPPET = """\
-import asyncio, os
+# Read-only counterpart of _IN_CLUSTER_SNIPPET: stream retention and consumer
+# position. Emits the same fields as JetStreamStats so the two routes agree.
+# Stream and durable names arrive via the environment, never spliced into the
+# source.
+_STATS_SNIPPET = """\
+import asyncio, json, os
 from nats.aio.client import Client as NATS
 
 STREAM = os.environ.get("HARNESS_NATS_STREAM", "IOT_DATA")
+DURABLE = os.environ.get("HARNESS_NATS_DURABLE", "metrics-consumer-pull")
 
 
 async def main():
@@ -152,8 +259,28 @@ async def main():
         allow_reconnect=False,
     )
     try:
-        info = await nc.jetstream().stream_info(STREAM)
-        print("RESULT %d" % info.state.messages)
+        js = nc.jetstream()
+        info = await js.stream_info(STREAM)
+        state, cfg = info.state, info.config
+        pending = ack = redelivered = 0
+        try:
+            ci = await js.consumer_info(STREAM, DURABLE)
+            pending = int(ci.num_pending or 0)
+            ack = int(ci.num_ack_pending or 0)
+            redelivered = int(ci.num_redelivered or 0)
+        except Exception:
+            pass
+        print("RESULT " + json.dumps({
+            "retained": int(state.messages or 0),
+            "num_pending": pending,
+            "num_ack_pending": ack,
+            "num_redelivered": redelivered,
+            "bytes_stored": int(state.bytes or 0),
+            "retention": str(getattr(cfg, "retention", "") or ""),
+            "max_msgs": int(getattr(cfg, "max_msgs", -1) or -1),
+            "max_age": float(getattr(cfg, "max_age", 0) or 0),
+            "max_bytes": int(getattr(cfg, "max_bytes", -1) or -1),
+        }))
     finally:
         await nc.close()
 
@@ -310,14 +437,14 @@ def purge_stream(stream: str = STREAM) -> NatsResult:
     return NatsResult(
         False,
         detail=(
-            f"stream {target} NOT purged; latency and throughput for this "
-            f"scenario include replay of unconsumed backlog. "
-            + " | ".join(failures)
+            f"stream {target} NOT purged; retained messages from earlier runs "
+            f"remain in the stream. See docs/findings-p0.md D13 for what that "
+            f"does and does not affect. " + " | ".join(failures)
         ),
     )
 
 
-def _direct_backlog(cfg: dict) -> int | None:
+def _probe_direct(cfg: dict) -> "JetStreamStats | None":
     try:
         import asyncio
 
@@ -325,7 +452,7 @@ def _direct_backlog(cfg: dict) -> int | None:
     except ImportError:
         return None
 
-    async def run() -> int:
+    async def run() -> JetStreamStats:
         nc = NATS()
         await nc.connect(
             cfg["servers"][0],
@@ -337,7 +464,7 @@ def _direct_backlog(cfg: dict) -> int | None:
             allow_reconnect=False,
         )
         try:
-            return (await nc.jetstream().stream_info(cfg["stream"])).state.messages
+            return await _read_stats(nc.jetstream(), cfg["stream"], cfg["durable"])
         finally:
             await nc.close()
 
@@ -347,38 +474,70 @@ def _direct_backlog(cfg: dict) -> int | None:
         return None
 
 
-def _in_cluster_backlog(stream: str = STREAM) -> int | None:
+def _probe_in_cluster(stream: str = STREAM) -> "JetStreamStats | None":
     pod = _find_pod()
     if not pod:
         return None
     proc = subprocess.run(
         [
             "kubectl", "exec", "-n", CONSUMER_NAMESPACE, pod,
-            "--", "env", f"HARNESS_NATS_STREAM={stream}",
-            "python3", "-c", _BACKLOG_SNIPPET,
+            "--", "env",
+            f"HARNESS_NATS_STREAM={stream}",
+            f"HARNESS_NATS_DURABLE={_durable()}",
+            "python3", "-c", _STATS_SNIPPET,
         ],
         capture_output=True, text=True, timeout=60, check=False,
     )
     for line in (proc.stdout or "").splitlines():
         if line.startswith("RESULT "):
-            return int(line.split()[1])
+            fields = json.loads(line.split(" ", 1)[1])
+            # unconsumed is derived; ignore it if an older snippet sent it.
+            fields.pop("unconsumed", None)
+            return JetStreamStats(**fields)
     return None
 
 
-def backlog_size(stream: str = STREAM) -> int | None:
-    """Messages currently retained in the stream, or None if unreachable.
+def stats(stream: str = STREAM) -> "JetStreamStats | None":
+    """Read stream retention and consumer position, or None if unreachable.
 
     Honours HARNESS_NATS_MODE exactly as purge_stream does, so an operator who
-    forces a single route gets a consistent answer from both functions rather
-    than one silently falling back and the other not.
+    forces a single route gets a consistent answer from both functions.
     """
     mode = os.environ.get("HARNESS_NATS_MODE", "auto").lower()
     target = _resolve_stream(stream)
 
     if mode in ("auto", "direct"):
-        size = _direct_backlog(_config(target))
-        if size is not None:
-            return size
+        found = _probe_direct(_config(target))
+        if found is not None:
+            return found
     if mode in ("auto", "incluster"):
-        return _in_cluster_backlog(target)
+        return _probe_in_cluster(target)
     return None
+
+
+def unconsumed(stream: str = STREAM) -> int | None:
+    """Messages published but not yet acknowledged by the durable consumer.
+
+    This is the number that determines whether a scenario's consumer is
+    replaying earlier work: num_pending (not yet delivered) plus num_ack_pending
+    (delivered, awaiting ack).
+
+    This is NOT stream.state.messages. The IOT_DATA stream is created with
+    retention=limits and no max_msgs, max_age or max_bytes, so the server
+    retains every message indefinitely and acknowledging one does not remove
+    it. Reading state.messages as a "backlog" therefore counts the entire
+    retained history, which is why a probe of a fully-consumed stream reported
+    18,236 while the consumer sat at num_pending=0. See D13.
+    """
+    found = stats(stream)
+    return None if found is None else found.unconsumed
+
+
+def retained(stream: str = STREAM) -> int | None:
+    """Messages the server is still storing, regardless of ack state.
+
+    Grows without bound on this stream. Useful for spotting unbounded storage
+    growth, which is a disk-exhaustion risk on SD-card nodes.
+    """
+    found = stats(stream)
+    return None if found is None else found.retained

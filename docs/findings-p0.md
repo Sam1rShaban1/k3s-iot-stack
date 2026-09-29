@@ -88,7 +88,7 @@ Sweep of all 56 parseable `summary.json` files:
 
 Fixed in `harness/collect.py` (flat `Sample` list, schema-agnostic, no keying on
 any per-message label) and in the consumer contract
-(`manifests/nats-consumer/configmap.yaml`), which now publishes
+(`manifests/nats-consumer/consumer.py`), which now publishes
 `iot_sensor_latency_ms` directly so no join is required at all.
 
 **Action required outside this repository:** paper 1's Table VI, the 5-node
@@ -414,3 +414,140 @@ if the initial fault state is a real one rather than one invented to be easy.
 Recorded as the first concrete candidate for a detector-plus-remediation
 scenario: *declared replicas ≠ live replicas, controller unhealthy, no
 component reports it.*
+
+---
+
+## D13 — the JetStream stream was unbounded, and "backlog" was the wrong number
+
+Found on 2026-09-29 while investigating the latency knee. Two errors: one in
+the cluster, one in the harness written to measure it.
+
+### (a) The stream can never evict anything
+
+`IOT_DATA` was created by the consumer as
+
+```python
+await js.add_stream(name=STREAM, subjects=[SUBJECT])
+```
+
+which yields the server defaults. Read back from the live cluster:
+
+```
+retention: limits   max_msgs: -1   max_age: 0.0   max_bytes: -1
+```
+
+With `retention: limits` and no limits, **acknowledging a message does not
+remove it**. The stream accumulates every message ever published. Measured:
+18,236 messages occupied 3.1 MB, about 170 B each, on pi7's `/data`. At a
+sustained 1,000 msg/s that is roughly **14.7 GB/day** against a 57 GB SD card
+that also carries K3s, Longhorn and the JetStream store.
+
+The failure mode is a slow disk exhaustion rather than a visible outage, which
+is exactly the class worth detecting. `harness/preflight.py` now has
+`check_jetstream_retention` (detector class 7), which fails the preflight when
+no limit is set, and the consumer creates the stream with `max_age=3600` and
+`max_bytes=512 MiB`, converging an existing stream with `update_stream` rather
+than leaving a pre-fix one unbounded because it already exists.
+
+### (b) The harness reported retained messages as "backlog"
+
+`harness/nats.py` exposed `backlog_size()` returning
+`stream_info().state.messages`, and the module docstring asserted that
+JetStream "retains published messages until they are acknowledged" and that the
+consumer therefore replays them. That is backwards for this configuration:
+messages are retained *after* acknowledgement, and the consumer does not replay
+them.
+
+A live probe made the error obvious:
+
+```
+stream   : messages=18236 first_seq=4828993 last_seq=4847228
+consumer : num_pending=0 num_ack_pending=0
+delivered: consumer_seq=3567859 stream_seq=4847228
+```
+
+The consumer's delivered sequence sat exactly at the stream's last sequence
+with nothing outstanding: fully consumed. `state.messages` was reporting 18,236
+**retained** messages and calling them a backlog. (A second false alarm in the
+same session came from counting lines in VictoriaMetrics' export payload, which
+is a single JSON document, and reading "10 samples" when 18,236 were stored.)
+
+The module now distinguishes the two numbers:
+
+| | meaning | source |
+|---|---|---|
+| `unconsumed()` | published, not yet acknowledged | `num_pending + num_ack_pending` |
+| `retained()` | still stored, regardless of ack | `stream.state.messages` |
+
+`unconsumed` is a derived property rather than a field, so it cannot disagree
+with the two values it is defined from; a test caught it being constructible
+with contradictory values. The runner records both per scenario, plus
+`nats_drained`, and only warns about a scenario when `unconsumed > 0` — a real
+indication that a consumer is behind.
+
+### What replay is actually possible
+
+The genuine contamination path is narrower than the old docstring claimed: a
+pull consumer with `deliver_policy: all` starts at the beginning of the stream,
+so if the **durable is deleted or recreated** — a fresh consumer name, a config
+change, a rebuilt store — it replays the whole retained history. That is why
+purging per run is still correct, and why bounding retention matters
+independently of benchmarking.
+
+### Consequence for the paper
+
+The historical corpus was collected without purging NATS (D10). That caveat
+stands, but it is now correctly characterised: retained history could only have
+been replayed after a durable recreation, not continuously.
+
+---
+
+## D14 — `kubectl apply` reported a successful rollout that changed nothing
+
+Found on 2026-09-29 while deploying the D13 retention fix, and the reason that
+fix appeared not to work at first.
+
+The consumer script was embedded as a `data['consumer.py']` key inside
+`manifests/nats-consumer/configmap.yaml`, mounted by a ConfigMap volume. Editing
+a ConfigMap does not change a pod template, so:
+
+```
+$ kubectl apply -f configmap.yaml -f deployment.yaml
+configmap/nats-consumer-script configured
+deployment.apps/nats-consumer configured
+deployment "nats-consumer" successfully rolled out
+```
+
+...while the pods kept their old ReplicaSet and their age kept climbing. The
+new code — bounded stream retention — was never running. It was caught only by
+comparing pod ages across the apply, after the fix appeared to have no effect
+on the stream.
+
+The deployment was also a no-op for a second, quieter reason: `kubectl apply -f
+<dir>` on a directory containing a `kustomization.yaml` fails on the
+kustomization file itself (`no matches for kind "Kustomization" in version
+"kustomize.config.k8s.io/v1beta1"`), so the generated pieces are silently not
+applied. It requires `kubectl apply -k`.
+
+### Resolution
+
+`manifests/nats-consumer/consumer.py` is now the single source of truth and
+`kustomization.yaml` generates the ConfigMap from it with `configMapGenerator`.
+The content-hash suffix is deliberately kept, because it is what makes the edit
+reach the pods: kustomize rewrites the Deployment's volume reference to the
+hashed name, the pod template changes, and the rollout is real. Verified by pod
+age and a new ReplicaSet across an apply, with the new code visible in the logs:
+
+```
+Stream: IOT_DATA ready (max_age=3600s max_bytes=536870912)
+```
+
+Setting `disableNameSuffixHash: true` to keep a stable ConfigMap name also
+removes that linkage, which is why it is not set; a test asserts it stays unset.
+
+Also removed: the checked-in "readable copy" of the script and the
+`sync_consumer.py` helper that maintained it. That copy had already drifted once
+and its own documented resync command overwrote the header explaining where the
+real source was. `harness/validate.py` now fails if a hand-written
+`configmap.yaml` reappears, and `make render-manifests` fails if any
+kustomization does not render.

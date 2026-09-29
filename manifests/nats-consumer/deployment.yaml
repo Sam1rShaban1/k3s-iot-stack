@@ -12,6 +12,10 @@ spec:
     metadata:
       labels:
         app: nats-consumer
+      # The volume below references the ConfigMap by its base name. kustomize
+      # rewrites that reference to the generated content-hashed name, which is
+      # what makes an edit to consumer.py change this pod template and produce
+      # a real rollout. Do not pin a name here, or the linkage is broken.
     spec:
       containers:
         - name: nats-consumer

@@ -9,7 +9,7 @@ CFLAGS    := -Wall -Wextra -O2
 
 .DEFAULT_GOAL := help
 .PHONY: help build test test-fast lint validate preflight config run clean-publishers \
-        sync-consumer check-consumer
+        render-manifests
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -31,15 +31,15 @@ lint: ## Syntax-check the C source, the Python modules, and the YAML tree
 	@python3 -m compileall -q harness >/dev/null && echo "python: ok"
 	@gcc $(CFLAGS) -fsyntax-only $(SRC) && echo "c: ok"
 	@python3 -m harness validate >/dev/null && echo "yaml: ok"
-	@$(MAKE) --no-print-directory check-consumer
 
-# configmap.yaml is the deployed source of truth; consumer.py is a readable
-# copy. Regenerate it rather than editing either by hand.
-sync-consumer: ## Regenerate consumer.py from the ConfigMap
-	@python3 manifests/nats-consumer/sync_consumer.py
-
-check-consumer: ## Fail if consumer.py has drifted from the ConfigMap
-	@python3 manifests/nats-consumer/sync_consumer.py --check
+# The consumer's ConfigMap is generated from consumer.py by kustomize, so there
+# is no second copy to synchronise. A previous arrangement had both a
+# hand-written configmap.yaml and a checked-in readable copy; they drifted, and
+# `render-manifests` is the check that the generated output stays valid.
+render-manifests: ## Render every kustomization, failing on invalid output
+	@for d in $$(find manifests argocd -name kustomization.yaml -not -path '*/.git/*' | xargs -n1 dirname); do \
+		kubectl kustomize $$d >/dev/null || exit 1; \
+	done && echo "manifests: ok"
 
 validate: lint test ## Lint then test
 

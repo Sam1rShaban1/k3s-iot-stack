@@ -7,7 +7,7 @@ to VictoriaMetrics via Prometheus remote-write.
 
 | Path | Files | Deployed? | Role |
 |---|---|---|---|
-| **Python** | `consumer.py`, `configmap.yaml`, `Dockerfile.consumer` | **Yes** — `deployment.yaml` runs `python3 /opt/consumer/consumer.py` | The single supported consumer from P0 onward |
+| **Python** | `consumer.py`, `kustomization.yaml` (generates the ConfigMap), `Dockerfile.consumer` | **Yes** — `deployment.yaml` runs `python3 /opt/consumer/consumer.py` | The single supported consumer from P0 onward |
 | **Go** | `consumer.go`, `go.mod`, `go.sum`, `Dockerfile` | **No** | Retained **unmodified** as the P5–P8 ablation reference |
 
 ### Why the Go path is retained but inactive
@@ -33,9 +33,26 @@ cd manifests/nats-consumer && docker build -t nats-consumer:go .
 
 ## Layout note
 
-`configmap.yaml` embeds the Python consumer source inline; it is the live definition
-of the running consumer. `consumer.py` is kept alongside it as the readable copy and
-must be kept in sync — this duplication is tracked and will be collapsed in P0.3.
+`consumer.py` is the source of truth for the running Python consumer.
+`kustomization.yaml` generates the `nats-consumer-script` ConfigMap from it, and
+rewrites the Deployment's volume reference to the generated content-hashed
+name, so an edit to the script always produces a real rollout.
+
+This replaced an earlier arrangement in which the source was embedded inline in
+a hand-written `configmap.yaml` with a second copy of the script kept beside it
+for readability. Two failures came out of that, both observed rather than
+hypothetical:
+
+- the two copies drifted, so the file people read and reviewed was not
+  necessarily the file that ran;
+- editing `configmap.yaml` did not change the pod template, so `kubectl apply`
+  reported `successfully rolled out` while every pod kept running the previous
+  code. The bounded-retention fix was deployed that way and silently did
+  nothing.
+
+There is now one copy. `harness/validate.py` fails if a hand-written
+`configmap.yaml` reappears, and `make render-manifests` fails if the
+kustomizations do not render.
 
 ## Known defect (scheduled for P0.4)
 

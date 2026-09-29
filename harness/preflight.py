@@ -307,6 +307,69 @@ def check_network_policies(result: PreflightResult) -> None:
             )
 
 
+def check_jetstream_retention(result: PreflightResult) -> None:
+    """Detector class 7: unbounded stream growth.
+
+    The IOT_DATA stream is created with retention=limits and no max_msgs,
+    max_age or max_bytes. Nothing is ever evicted and acknowledging a message
+    does not remove it, so the stream grows without limit.
+
+    Measured on this cluster: 18,236 messages occupy 3.1 MB, about 170 B each.
+    At a sustained 1000 msg/s that is roughly 14.7 GB/day, against a 57 GB SD
+    card on pi7 that also carries K3s, Longhorn and the JetStream store. The
+    failure mode is therefore a slow disk exhaustion, not a visible failure --
+    which is exactly the class of problem worth detecting rather than
+    discovering. See docs/findings-p0.md D13.
+    """
+    try:
+        from . import nats as natsctl
+    except Exception as e:  # noqa: BLE001
+        result.add(Check("jetstream-retention", False, f"could not load nats probe: {e}"))
+        return
+
+    found = natsctl.stats()
+    if found is None:
+        result.add(
+            Check("jetstream-retention", False, "could not read JetStream state")
+        )
+        return
+
+    detail = (
+        f"stream {natsctl._resolve_stream(natsctl.STREAM)}: "
+        f"{found.retained} messages / {found.bytes_stored / 1e6:.1f} MB retained, "
+        f"{found.unconsumed} unconsumed, retention={found.retention} "
+        f"max_msgs={found.max_msgs} max_age={found.max_age} max_bytes={found.max_bytes}"
+    )
+    if found.unbounded:
+        result.add(
+            Check(
+                "jetstream-retention",
+                False,
+                detail + " -- no limit is set, so stored data grows without bound "
+                "and the node's disk will eventually be exhausted",
+            )
+        )
+    else:
+        result.add(Check("jetstream-retention", True, detail))
+
+    # Unconsumed work is a separate question from retention, and it is the one
+    # that invalidates a benchmark: it means a consumer is behind.
+    if found.unconsumed:
+        result.add(
+            Check(
+                "jetstream-drained",
+                False,
+                f"{found.unconsumed} messages published but not acknowledged "
+                f"(num_pending={found.num_pending}, "
+                f"num_ack_pending={found.num_ack_pending}); a consumer is behind",
+            )
+        )
+    else:
+        result.add(
+            Check("jetstream-drained", True, "no unacknowledged messages")
+        )
+
+
 def run_preflight(components: bool = True) -> PreflightResult:
     result = PreflightResult()
     reachable = check_cluster_reachable(result)
@@ -316,4 +379,5 @@ def run_preflight(components: bool = True) -> PreflightResult:
         for name, (ns, selectors) in PIPELINE_COMPONENTS.items():
             check_component(result, name, ns, selectors)
         check_network_policies(result)
+        check_jetstream_retention(result)
     return result

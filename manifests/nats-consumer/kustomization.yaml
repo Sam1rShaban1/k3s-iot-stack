@@ -3,6 +3,38 @@ kind: Kustomization
 
 resources:
   - deployment.yaml
-  - configmap.yaml
 
 namespace: nats-consumer
+
+# The ConfigMap is generated from consumer.py, which is the source of truth.
+#
+# Two earlier arrangements both caused real problems:
+#
+#   * the script lived as a data key inside a hand-written configmap.yaml, with
+#     a second copy checked in beside it for readability. The copies drifted,
+#     and the copy people reviewed was not the one that ran.
+#   * editing that configmap.yaml did not change the pod template, so
+#     `kubectl apply` printed "successfully rolled out" while every pod kept
+#     running the old code. The bounded-retention fix was deployed that way and
+#     silently did nothing.
+#
+# Generating the ConfigMap from that one file means there is only ever one copy
+# of the script, and keeping the content-hash suffix means an edit to it always
+# changes the pod template and produces a real rollout.
+configMapGenerator:
+  - name: nats-consumer-script
+    files:
+      - consumer.py
+    options:
+      labels:
+        app: nats-consumer
+# The generated ConfigMap deliberately keeps its content-hash suffix. Editing
+# consumer.py changes the hash, kustomize rewrites the Deployment's volume
+# reference to the new name, and that changes the pod template -- so the
+# rollout is real instead of a no-op. The two are linked: setting
+# disableNameSuffixHash also pins the name, which removes the only thing that
+# made an edit reach the pods, reintroducing exactly the silent no-op rollout
+# this arrangement exists to prevent.
+#
+# kustomize rewrites the volume reference itself, so nothing outside this file
+# needs to know the hash.

@@ -233,17 +233,26 @@ def run(
         print(f"[{name}] target {rate} msg/s across {clients} clients")
         if clear_before_each:
             # Clear BOTH stores. Clearing only VictoriaMetrics leaves the
-            # JetStream backlog intact and the consumer then spends the
-            # scenario replaying it -- see harness/nats.py for the failure
-            # mode this produced.
+            # JetStream retained history in place, and a pull consumer whose
+            # durable is recreated replays all of it -- see harness/nats.py and
+            # docs/findings-p0.md D13.
             accepted = vm.delete_series("iot_.*")
             if not accepted:
                 print("  WARNING VictoriaMetrics rejected delete_series")
+            pre = natsctl.stats()
+            if pre is not None and pre.unconsumed:
+                # Only genuinely outstanding work invalidates a measurement.
+                # Retained-but-acknowledged messages do not.
+                print(
+                    f"  WARNING {pre.unconsumed} messages published but not "
+                    f"acknowledged before this scenario"
+                )
             nats_result = natsctl.purge_stream()
             if nats_result.purged:
                 print(
                     f"  cleared: VM + NATS stream "
-                    f"(had {nats_result.messages_before} retained)"
+                    f"(had {nats_result.messages_before} retained, "
+                    f"{(pre.unconsumed if pre else 0)} unconsumed)"
                 )
             else:
                 print(f"  WARNING {nats_result.detail}")
@@ -311,6 +320,13 @@ def run(
             test_duration_s=conf.test_duration_s,
         )
         report["results"].update(nats_result.as_metadata())
+        # Record where the stream ended up. unconsumed>0 after the settle means
+        # the pipeline had not drained when the window closed, which makes the
+        # scenario's throughput a lower bound rather than a measurement.
+        post = natsctl.stats()
+        if post is not None:
+            report["results"].update(post.as_metadata())
+            report["results"]["nats_drained"] = post.unconsumed == 0
         report_path = paths.results / f"{name}_report.json"
         report_path.write_text(json.dumps(report, indent=2))
         reports.append(report)
@@ -340,6 +356,9 @@ def run(
         "latency_metric": reports[0]["results"]["latency_metric"] if reports else None,
         "nats_purged_all_scenarios": all(
             r["results"].get("nats_purged") for r in reports
+        ) if reports else False,
+        "nats_drained_all_scenarios": all(
+            r["results"].get("nats_drained") for r in reports
         ) if reports else False,
         "total_scenarios": len(reports),
         "scenarios": [

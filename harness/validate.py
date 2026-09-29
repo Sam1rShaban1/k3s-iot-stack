@@ -31,7 +31,11 @@ REQUIRED = [
     "manifests/namespaces/network-policies.yaml",
     "manifests/nats-consumer/kustomization.yaml",
     "manifests/nats-consumer/deployment.yaml",
-    "manifests/nats-consumer/configmap.yaml",
+    # The consumer script is the source of truth; the ConfigMap that the
+    # Deployment mounts is generated from it by kustomize. A hand-written
+    # configmap.yaml must NOT reappear: it is what allowed the script and the
+    # running pods to diverge, and what made an edit fail to roll the pods.
+    "manifests/nats-consumer/consumer.py",
     "manifests/benthos/kustomization.yaml",
     "publisher.c",
 ]
@@ -83,6 +87,18 @@ def validate(repo: str = REPO) -> Result:
     for rel in REQUIRED:
         if not os.path.exists(os.path.join(repo, rel)):
             errors.append(f"required file missing: {rel}")
+
+    # The generated ConfigMap must not be reintroduced as a hand-written file.
+    # It is not in REQUIRED, so its absence is fine; its presence is the bug,
+    # because kustomize generates it and a second source drifts from the first.
+    stale = os.path.join(repo, "manifests/nats-consumer/configmap.yaml")
+    if os.path.exists(stale):
+        errors.append(
+            "manifests/nats-consumer/configmap.yaml must not exist: the "
+            "ConfigMap is generated from consumer.py by kustomize. A "
+            "hand-written copy is how the script and the running pods "
+            "diverged, and how an edit failed to roll the pods."
+        )
 
     # 1. Every YAML parses.
     patterns = [
