@@ -353,3 +353,64 @@ re-instrumented runs only, with the fetch timeout stated.
 The corrected distribution (p50 17 ms, p99 ~105–189 ms) is a far more
 plausible result for a five-node Raspberry Pi cluster, and it is the first
 end-to-end latency measurement this pipeline has actually produced.
+
+---
+
+## D12 — GitOps drift that no component reported: Benthos at 1/5 replicas
+
+Found on 2026-09-29 while measuring the latency knee (below). Not a measurement
+defect, but a live instance of the failure mode the second paper targets, so it
+is recorded here with the evidence.
+
+### The state
+
+| | value |
+|---|---|
+| `manifests/benthos/deployment.yaml` | `replicas: 5` |
+| live Deployment | `spec.replicas: 1`, `readyReplicas: 1` |
+| ArgoCD `benthos` app | `SYNC STATUS: Unknown`, `HEALTH STATUS: Healthy` |
+| running pod age | 132 d, `2 (21h ago)` restarts |
+
+So Git says five replicas, the cluster runs one, and **nothing surfaces the
+disagreement**:
+
+- ArgoCD reports `Unknown` for sync status across *every* application, not just
+  this one, because the application-controller cannot pull its own image
+  (the air-gapped image problem from P0.6). An app whose controller is down
+  cannot report drift, so `Unknown` is being read as "nothing to see".
+- `HEALTH STATUS: Healthy` is actively misleading here. ArgoCD's health check
+  asks whether the *deployed* workload is available, and one healthy Benthos pod
+  is available. Replica count is not part of that check.
+- Nothing else in the stack compares the declared spec to the live spec.
+
+### Why it matters for the measurements
+
+Benthos is the MQTT → NATS stage, and a single replica makes it a serial
+bottleneck and a single point of failure. The latency knee sits right where
+that would be predicted:
+
+| target | throughput | efficiency | p99 |
+|---|---|---|---|
+| 500 msg/s | 494.81 | 98.96% | 322 ms |
+| 1000 msg/s | 948.27 | 94.83% | 2,475 ms |
+| 2000 msg/s | 1965.72 | 98.29% | 2,679 ms |
+
+This is **not** resource exhaustion: the cluster sat at 3–14% CPU and 12–62%
+memory throughout, and the consumer shows no CPU throttling and no restarts.
+The jump from 322 ms to ~2.5 s p99 between 500 and 1000 msg/s is consistent
+with queueing behind one Benthos instance, but that is a hypothesis consistent
+with the evidence, not a measured cause. Settling it needs a controlled
+comparison, which is deferred to the P2 fault-injection lab rather than
+asserted here.
+
+### Open decision
+
+Scaling Benthos to 5 changes the system under test, so it is not done
+unilaterally. It needs to be settled before the paper-2 corpus is collected,
+because "scaled the streaming bridge to match Git" is precisely the kind of
+remediation the agent is meant to perform — and it is only a fair evaluation
+if the initial fault state is a real one rather than one invented to be easy.
+
+Recorded as the first concrete candidate for a detector-plus-remediation
+scenario: *declared replicas ≠ live replicas, controller unhealthy, no
+component reports it.*
