@@ -47,7 +47,13 @@ class RunPaths:
 
 
 def ensure_publisher(src: str, binary: str) -> Path:
-    """Compile the publisher if the binary is missing or older than the source."""
+    """Compile the publisher if the binary is missing or older than the source.
+
+    Returns an ABSOLUTE path. Path("./publisher") stringifies to "publisher",
+    and a bare name makes subprocess look it up in PATH rather than the working
+    directory -- which is why the first end-to-end run raised FileNotFoundError
+    even though the binary had just been built.
+    """
     bin_path = Path(binary)
     src_path = Path(src)
     if not src_path.exists():
@@ -58,7 +64,10 @@ def ensure_publisher(src: str, binary: str) -> Path:
     if needs_build:
         print(f"  building publisher: {' '.join(PUBLISHER_BUILD)}")
         subprocess.run(PUBLISHER_BUILD, check=True)
-    return bin_path
+    resolved = bin_path.resolve()
+    if not os.access(resolved, os.X_OK):
+        raise RuntimeError(f"publisher not executable: {resolved}")
+    return resolved
 
 
 def spawn_publishers(
@@ -184,7 +193,6 @@ def run(
     scenarios = scenarios or conf.scenarios()
     vm = VMClient(conf.vm_url)
     paths = RunPaths.create(conf.output_root)
-    ensure_publisher(conf.publisher_src, conf.publisher_bin)
 
     print(f"run      : {paths.run_id}")
     print(f"broker   : {conf.broker_address}  topic={conf.topic}  qos={qos}")
@@ -194,6 +202,10 @@ def run(
     print()
 
     reports = []
+    # Use the absolute path ensure_publisher resolved. Re-deriving it from the
+    # config value yields a bare "publisher", which subprocess looks for in
+    # PATH instead of the working directory.
+    publisher_bin = ensure_publisher(conf.publisher_src, conf.publisher_bin)
     for clients, rate in scenarios:
         name = cfg.HarnessConfig.scenario_name(clients, rate)
         print(f"[{name}] target {rate} msg/s across {clients} clients")
@@ -202,7 +214,7 @@ def run(
             time.sleep(5)
 
         procs = spawn_publishers(
-            Path(conf.publisher_bin), conf, clients, rate, paths.run_id, qos,
+            publisher_bin, conf, clients, rate, paths.run_id, qos,
             conf.test_duration_s,
         )
         time.sleep(conf.test_duration_s)

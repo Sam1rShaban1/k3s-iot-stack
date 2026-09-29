@@ -1,61 +1,144 @@
 ---
-- name: Install K3s Master nodes
+# K3s installation for master and workers.
+#
+# P0.3 repaired this playbook. It previously could not install a worker at all:
+#
+#   * master_ip referenced hostvars['rpi-master1'], a host that does not exist
+#     in the inventory, so the join URL was empty.
+#   * the worker role slurped /tmp/k3s_node_token.txt from the *worker*, but
+#     the master wrote that file on *itself*. With a single control host that
+#     only works by accident, and never for a second control host.
+#   * the inventory listed two workers, neither of which had a correct address
+#     after DHCP moved, so pi3 and pi4 were never provisioned by this playbook
+#     at all despite the cluster having run five nodes for 137 days.
+#
+# Design change: the master publishes its token to a group, and workers consume
+# it from there. That removes the need for a shared filesystem and the
+# broken hostvars lookup.
+#
+# The k3s version is PINNED. Without INSTALL_K3S_VERSION the get.k3s.io script
+# installs the newest release, so re-joining a single node silently upgrades it
+# ahead of the rest of the cluster. That is the version-skew failure in paper
+# §V-E1(d), which the paper attributes to intermittent ClusterIP resolution
+# failures -- a defect that is invisible until it causes an outage and cannot be
+# undone by re-running the playbook. Set the pin to match the control plane.
+#
+# IMPORTANT for re-joining an existing node: a node that was previously part of
+# a *different* cluster will hold certificates issued by a different CA and will
+# fail with:
+#     tls: failed to verify certificate: x509: certificate signed by unknown authority
+# Uninstalling first is mandatory in that case. The `reset` role does this, and
+# `k3s_rejoin` is wired up to call it when re-join is requested.
+
+- name: Install K3s control plane
   hosts: rpi-master
   become: true
+  gather_facts: true
   tasks:
+    - name: Refresh apt metadata
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
 
     - name: Download K3s install script
-      get_url:
+      ansible.builtin.get_url:
         url: https://get.k3s.io
         dest: /tmp/k3s_install.sh
         mode: '0755'
 
-    - name: Install K3s master
-      shell: |
-        INSTALL_K3S_EXEC="--write-kubeconfig-mode 644 --disable=traefik" sh /tmp/k3s_install.sh
+    - name: Install K3s control plane
+      ansible.builtin.shell: |
+        INSTALL_K3S_EXEC="server \
+          --write-kubeconfig-mode 644 \
+          --disable=traefik \
+          --node-ip {{ k3s_node_ip }} \
+          --advertise-address {{ k3s_node_ip }}" \
+        sh /tmp/k3s_install.sh
+      environment:
+        INSTALL_K3S_SKIP_DOWNLOAD: "false"
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+      register: master_install
+      changed_when: master_install.rc == 0
 
-    - name: Wait for K3s to be ready
-      shell: kubectl get nodes
-      register: k3s_ready
-      retries: 10
-      delay: 15
-      until: "'Ready' in k3s_ready.stdout"
+    - name: Wait for the API server
+      ansible.builtin.shell: kubectl get --raw /readyz
+      register: api_ready
+      retries: 30
+      delay: 5
+      until: api_ready.rc == 0
+      changed_when: false
 
-    - name: Fetch K3s token
-      shell: cat /var/lib/rancher/k3s/server/node-token
-      register: master_token
+    - name: Publish the join token to the worker group
+      ansible.builtin.shell: cat /var/lib/rancher/k3s/server/node-token
+      register: node_token
+      changed_when: false
+      no_log: true
 
-    - name: Save token locally (control PC)
-      copy:
-        content: "{{ master_token.stdout }}"
-        dest: ./k3s_node_token.txt
-      delegate_to: localhost
+    - name: Store the token for the worker role
+      ansible.builtin.set_fact:
+        k3s_join_token: "{{ node_token.stdout | trim }}"
+      no_log: true
 
-    - name: Save token to shared location for worker nodes
-      copy:
-        content: "{{ master_token.stdout }}"
-        dest: /tmp/k3s_node_token.txt
-      mode: '0644'
-
-- name: Install K3s Worker nodes
+- name: Install K3s workers
   hosts: rpi-worker
   become: true
+  gather_facts: true
+  serial: 1
   vars:
-    master_ip: "{{ hostvars['rpi-master1']['ansible_host'] }}"
-    master_token_file: "/tmp/k3s_node_token.txt"
+    master_ip: "{{ groups['rpi-master'][0] | ansible_inventory_hostname }}"
+    master_addr: "{{ hostvars[groups['rpi-master'][0]].ansible_host }}"
   tasks:
+    - name: Reset node when a re-join is requested
+      ansible.builtin.include_role:
+        name: reset
+      when: k3s_rejoin | default(false) | bool
+
+    - name: Stop and disable any stray k3s units before installing
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - k3s
+        - k3s-agent
+      failed_when: false
+      register: stray_units
+
+    - name: Report stray units that were masked
+      ansible.builtin.debug:
+        msg: "stopped stray unit {{ item.item }} (was {{ item.status | default('unknown') }})"
+      loop: "{{ stray_units.results }}"
+      when: item is changed
 
     - name: Download K3s install script
-      get_url:
+      ansible.builtin.get_url:
         url: https://get.k3s.io
         dest: /tmp/k3s_install.sh
         mode: '0755'
 
-    - name: Read K3s token from master
-      slurp:
-        src: /tmp/k3s_node_token.txt
-      register: token_content
+    - name: Remove conflicting server unit left by a previous install
+      ansible.builtin.file:
+        path: /etc/systemd/system/k3s.service
+        state: absent
+      when: k3s_rejoin | default(false) | bool
+      notify: reload systemd
 
     - name: Install K3s agent
-      shell: |
-        K3S_URL=https://{{ master_ip }}:6443 K3S_TOKEN="{{ token_content.content | b64decode | trim }}" sh /tmp/k3s_install.sh
+      ansible.builtin.shell: |
+        set -euo pipefail
+        INSTALL_K3S_EXEC="agent \
+          --server https://{{ master_addr }}:6443 \
+          --node-ip {{ k3s_node_ip }} \
+          --token {{ k3s_join_token }}" \
+        sh /tmp/k3s_install.sh
+      environment:
+        INSTALL_K3S_SKIP_DOWNLOAD: "false"
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+      no_log: true
+      register: agent_install
+      changed_when: agent_install.rc == 0
+
+  handlers:
+    - name: reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true

@@ -19,13 +19,28 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Optional
 
-# name -> (namespace, label selector, required-ready-count-check)
+# Component -> (namespace, candidate label selectors, in preference order).
+#
+# Two label conventions coexist in this cluster and both are legitimate:
+#   app.kubernetes.io/name=<x>   Helm charts (EMQX, NATS, VictoriaMetrics)
+#   app=<x>                      hand-written manifests (benthos, nats-consumer)
+# Hardcoding one style produced false negatives during the P0.6 recovery --
+# preflight reported "no pods match" for three components that were Running.
+# So each component lists candidates and the first that matches wins; if none
+# match, every candidate is reported so the label can be corrected rather than
+# guessed at.
 PIPELINE_COMPONENTS = {
-    "emqx": ("emqx", "app.kubernetes.io/name=emqx"),
-    "benthos": ("benthos", "app.kubernetes.io/name=benthos"),
-    "nats": ("nats", "app.kubernetes.io/name=nats"),
-    "victoriametrics": ("victoriametrics", "app.kubernetes.io/name=victoria-metrics-single"),
-    "nats-consumer": ("nats-consumer", "app=nats-consumer"),
+    "emqx": (
+        "emqx",
+        ["app.kubernetes.io/name=emqx", "app=emqx", "app=emqx-host"],
+    ),
+    "benthos": ("benthos", ["app=benthos", "app.kubernetes.io/name=benthos"]),
+    "nats": ("nats", ["app.kubernetes.io/name=nats", "app=nats", "app=nats-box"]),
+    "victoriametrics": (
+        "victoriametrics",
+        ["app=victoriametrics", "app.kubernetes.io/name=victoria-metrics-single"],
+    ),
+    "nats-consumer": ("nats-consumer", ["app=nats-consumer"]),
 }
 
 
@@ -154,23 +169,44 @@ def check_cluster_reachable(result: PreflightResult) -> bool:
             )
         )
 
+    # Must be an explicit True: this function's return value gates whether the
+    # per-component checks run at all. Falling off the end returns None, which
+    # is falsy, and silently reduces the whole preflight to three checks while
+    # still exiting 0 -- a false pass.
+    return True
 
-def check_component(result: PreflightResult, name: str, namespace: str, selector: str) -> None:
-    code, out, err = _kubectl(
-        ["get", "pods", "-n", namespace, "-l", selector, "-o", "json", "--request-timeout=8s"]
-    )
-    if code != 0:
-        result.add(Check(name, False, f"query failed: {err.strip()}"))
-        return
-    try:
-        pods = json.loads(out).get("items", [])
-    except Exception as e:
-        result.add(Check(name, False, f"could not parse pods: {e}"))
-        return
+
+def check_component(
+    result: PreflightResult, name: str, namespace: str, selectors: list[str]
+) -> None:
+    """Try each candidate selector; report the first that matches any pod."""
+    found_selector = None
+    pods: list = []
+    tried: list[str] = []
+
+    for selector in selectors:
+        tried.append(selector)
+        code, out, err = _kubectl(
+            ["get", "pods", "-n", namespace, "-l", selector, "-o", "json",
+             "--request-timeout=8s"]
+        )
+        if code != 0:
+            continue
+        try:
+            items = json.loads(out).get("items", [])
+        except Exception:
+            items = []
+        if items:
+            found_selector, pods = selector, items
+            break
 
     if not pods:
         result.add(
-            Check(name, False, f"no pods match {selector} in namespace {namespace}")
+            Check(
+                name,
+                False,
+                f"no pods in namespace {namespace} match any of: {', '.join(tried)}",
+            )
         )
         return
 
@@ -188,12 +224,11 @@ def check_component(result: PreflightResult, name: str, namespace: str, selector
             else:
                 bad.append(f"{pname}:{phase}/notready")
 
+    detail = f"{len(ready)} ready ({', '.join(ready)}) [selector {found_selector}]"
     if ready and not bad:
-        result.add(Check(name, True, f"{len(ready)} ready ({', '.join(ready)})"))
+        result.add(Check(name, True, detail))
     elif ready:
-        result.add(
-            Check(name, False, f"partially ready: {', '.join(bad)}", fatal=True)
-        )
+        result.add(Check(name, False, f"partially ready: {', '.join(bad)}", fatal=True))
     else:
         result.add(Check(name, False, f"none ready: {', '.join(bad) or 'unknown'}"))
 
@@ -278,7 +313,7 @@ def run_preflight(components: bool = True) -> PreflightResult:
     if not reachable:
         return result
     if components:
-        for name, (ns, selector) in PIPELINE_COMPONENTS.items():
-            check_component(result, name, ns, selector)
+        for name, (ns, selectors) in PIPELINE_COMPONENTS.items():
+            check_component(result, name, ns, selectors)
         check_network_policies(result)
     return result

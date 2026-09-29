@@ -68,35 +68,87 @@ def kubectl_json(*args: str) -> Optional[dict]:
         return None
 
 
+def _tcp_reachable(host: str, port: int, timeout: float = 1.5) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def discover_emqx_address(namespace: str = "emqx") -> Optional[tuple[str, int]]:
     """Resolve the broker's reachable address from the cluster.
 
-    Prefers an explicit LoadBalancer ingress address (what the paper's
-    192.168.1.241 claim describes), then a NodePort, and pairs the chosen
-    ingress port with the Service's own targetPort so a renamed port such as
-    `mqtt` still resolves.
+    Prefers an explicit LoadBalancer ingress address, then a NodePort, then a
+    headless/ClusterIP. When several candidates exist, each is probed for TCP
+    reachability from the machine running the harness and the first that
+    answers wins.
+
+    The probe matters: the master advertises InternalIP 10.0.0.1, which is only
+    routable from inside the cluster. Running the harness from a laptop and
+    trusting that address yields a connection timeout on every scenario. A
+    NodePort is reachable on any node's LAN address, so the node list is used to
+    build the candidate set.
     """
     svc = kubectl_json("get", "svc", "emqx", "-n", namespace)
     if not svc:
         return None
 
-    status = svc.get("status") or {}
-    ingresses = status.get("loadBalancer", {}).get("ingress") or []
-    if ingresses:
-        ip = ingresses[0].get("ip")
-        if ip:
-            return ip, 1883
-
     ports = (svc.get("spec") or {}).get("ports") or []
     mqtt = _find_mqtt_port(ports)
-    if mqtt and mqtt.get("nodePort"):
-        node_ip = _master_node_ip()
-        if node_ip:
-            return node_ip, int(mqtt["nodePort"])
+    if not mqtt:
+        return None
+    service_port = int(mqtt.get("port", 1883))
+    node_port = mqtt.get("nodePort")
 
-    if mqtt:
-        return "127.0.0.1", int(mqtt.get("port", 1883))
-    return None
+    candidates: list[tuple[str, int]] = []
+
+    for ing in (svc.get("status", {}).get("loadBalancer", {}).get("ingress") or []):
+        if ing.get("ip"):
+            candidates.append((ing["ip"], service_port))
+        if ing.get("hostname"):
+            candidates.append((ing["hostname"], service_port))
+
+    cluster_ip = (svc.get("spec") or {}).get("clusterIP")
+    if cluster_ip and cluster_ip not in ("None", ""):
+        candidates.append((cluster_ip, service_port))
+
+    if node_port:
+        for addr in _node_addresses():
+            candidates.append((addr, int(node_port)))
+        master = _master_node_ip()
+        if master:
+            candidates.append((master, int(node_port)))
+
+    # De-duplicate, preserving order.
+    seen: set = set()
+    ordered = [c for c in candidates if not (c in seen or seen.add(c))]
+
+    for host, port in ordered:
+        if _tcp_reachable(host, port):
+            return host, port
+
+    # Nothing answered. Return the first candidate anyway so the failure is a
+    # clear connection error naming the address, rather than a silent default.
+    return ordered[0] if ordered else None
+
+
+def _node_addresses() -> list[str]:
+    """All node addresses, preferring those on routable subnets."""
+    nodes = kubectl_json("get", "nodes")
+    if not nodes:
+        return []
+    addrs: list[str] = []
+    for item in nodes.get("items", []):
+        seen: set = set()
+        for a in (item.get("status") or {}).get("addresses", []):
+            if a.get("type") in ("InternalIP", "ExternalIP") and a.get("address"):
+                if a["address"] not in seen:
+                    seen.add(a["address"])
+                    addrs.append(a["address"])
+    return addrs
 
 
 def _find_mqtt_port(ports: list[dict]) -> Optional[dict]:
