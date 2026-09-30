@@ -18,8 +18,24 @@ data:
         client_id: benthos-consumer-${HOSTNAME}
         qos: 1
 
+    # NOTE: a `benthos_entry_ts` processor was attempted here to split the
+    # end-to-end latency into its stages, and it silently destroyed the
+    # pipeline. The MQTT input's root is the RAW PAYLOAD BYTES, not parsed
+    # JSON, so `root.benthos_entry_ts = ...` coerced the message into an object
+    # containing only that one field. The consumer then received a payload with
+    # no device_id and no ts, emitted a single series, and the scenario reported
+    # stored=0 at 0% efficiency while every pod stayed Running and preflight
+    # stayed green.
+    #
+    # The correct form has to parse first, something like:
+    #   - bloblang: 'root = this.parse_json().assign("benthos_entry_ts", timestamp_unix_nano() / 1000000)'
+    # but that is written and verified on a bench, not applied to the live
+    # pipeline on the strength of one test. Enabling it is tracked as follow-up
+    # work; the stage attribution it was for is answered well enough without it
+    # (see docs/findings-p0.md D20).
     pipeline:
       processors: []
+
 
     output:
       nats:

@@ -957,3 +957,109 @@ produced by the instrumentation that D4, D9, D11 and D15 show to be wrong, and
 committing them unannotated would imply they are citable. The raw
 VictoriaMetrics exports for all runs remain local (~3.3 GB) and are
 regenerable.
+
+---
+
+## D20 — what actually drives the tail latency: the Benthos bridge, not IO
+
+Asked directly after D19 left the 100c_2000r anomaly unexplained. This is the
+measurement, and the answer is not disk.
+
+### The tail is not IO, and not the write path
+
+Split end-to-end latency using the timestamps the consumer already publishes.
+`ts` is set by the publisher, `nats_exit_ts` when the consumer pulls the
+message, `vm_write_ack_ts` after VictoriaMetrics accepts the write. Messages
+are paired by the VictoriaMetrics sample timestamp, which is shared by every
+series of one message.
+
+100c_2000r, the worst cell (QoS 0):
+
+| stage | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| publisher -> EMQX -> Benthos -> NATS | 495 ms | 6,798 ms | **9,400 ms** | 9,794 ms |
+| consumer -> VictoriaMetrics | 17 ms | 49 ms | **456 ms** | 496 ms |
+| end to end | 806 ms | 4,971 ms | 7,121 ms | 8,503 ms |
+
+The storage path is 5% of the tail. For comparison, 10c_500r: ingest p99 358 ms,
+write p99 6 ms.
+
+**A methodology note, because it nearly produced the opposite answer.** The
+first version of this analysis paired series by list position. The series are
+returned in independent orders, so a positional zip pairs unrelated messages and
+reports confident nonsense -- it gave a p99 of 0-1 ms for this very run, which
+would have said "the pipeline is fast and the tail is elsewhere". Pairing on the
+shared sample timestamp is the only correct alignment. `harness/stage_latency.py`
+now does that, and its module docstring records the trap.
+
+### Ruled out, each by measurement
+
+| hypothesis | test | result |
+|---|---|---|
+| CPU saturation | `kubectl top` during a 100c_2000r run | 6-14% per node; nothing near a limit |
+| disk / SD-card stall | write-stage p99 is 456 ms, max 496 ms | rejected |
+| VictoriaMetrics ingest | write stage is p50 17 ms | rejected |
+| the load generator | 100 publishers self-report 20.0 msg/s each, 0 errors, 0 reconnects | rejected |
+| the WiFi hop (laptop to master) | ping under full load | p50 8 ms, p99 15 ms, max 16 ms, no loss |
+| the consumer's fetch loop | `FETCH_TIMEOUT_S` reduced 1.0 -> 0.05 in D11 | already removed as a cause |
+
+### The bridge is the constraint
+
+Holding rate and client count fixed and varying only the number of Benthos
+replicas consuming the MQTT shared subscription:
+
+| Benthos replicas | ingest p99 | end-to-end p99 | throughput | efficiency |
+|---|---|---|---|---|
+| 1 | 8,761 ms | 8,814 ms | 1,919 msg/s | 95.97% |
+| 5 | 9,400 ms | 9,262 ms | 1,930 msg/s | 96.26% |
+| 10 | **1,923 ms** | **1,984 ms** | 1,968 msg/s | 98.38% |
+
+A 4.5x reduction in tail latency from scaling the bridge alone. EMQX's
+replica count is constant across all three rows, so a slow broker cannot explain
+it; a slow bridge can, and does.
+
+The mechanism is the shared subscription. Benthos subscribes as
+`$share/benthos/sensors/#`, so EMQX hands each message to exactly one group
+member, and at QoS 1 that member acknowledges back to EMQX per message. Each
+replica therefore has a bounded message rate, and at 2,000 msg/s with few
+replicas the per-replica queue is where the seconds accumulate. The stage label
+"publisher -> EMQX -> Benthos -> NATS" is a compound of three hops; the
+experiment above localises the cost to the Benthos end of it, not to the
+publisher's WiFi or to EMQX's accept path.
+
+### Consequences
+
+- **For the cluster:** `replicas: 5` in the manifest is measurably
+  under-provisioned for 100-client 2,000 msg/s workloads. 10 is 4.5x better on
+  p99 and 2.4 points better on efficiency. The manifest is left at 5 to match
+  Git and because changing it changes the system the paper describes, so this
+  is a decision for the author, not a silent tuning change. Recorded as a
+  concrete remediation candidate: "scale the streaming bridge to match the
+  configured rate".
+- **For the paper:** the 100c_2000r tail in D19 is not an anomaly to be
+  smoothed. It is the bridge queueing, it is reproducible, and it is a
+  configuration-dependent property rather than a fixed cost of the hardware.
+  Reporting it with the replica count attached is more useful than reporting the
+  better-behaved 10c_2000r cell alone.
+- **For tooling:** `harness/stage_latency.py` makes this a one-command check
+  for any past or future run, which is how a future regression in any stage
+  would be attributed rather than guessed at.
+
+### Not fixed here: the intra-ingest split
+
+Adding a `benthos_entry_ts` processor would separate the MQTT hop from
+Benthos-onwards, and the consumer has computed `benthos_to_nats_latency_ms` from
+a field of that name since D11 -- but nothing ever set it.
+
+Wiring it up **broke the pipeline**, and is worth recording because it failed
+silently. Benthos's MQTT input root is the raw payload bytes, not parsed JSON,
+so `root.benthos_entry_ts = ...` coerced each message into an object containing
+only that field. The consumer received payloads with no `device_id` and no `ts`,
+emitted a single series, and the scenario reported `stored=0, eff=0.0%` while
+every pod stayed Running, preflight stayed green, and Benthos logged no error.
+It needs `root = this.parse_json().assign(...)` and verification on a bench
+before it goes near the live pipeline.
+
+Also note that the ConfigMap edit did not trigger a Benthos rollout -- the pods
+ran the previous day's config -- which is the D14 failure mode recurring in a
+second component. Worth adding the same content-hash mechanism there.
