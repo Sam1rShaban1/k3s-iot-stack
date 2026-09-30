@@ -95,6 +95,27 @@ spec:
           name: benthos-config
       affinity:
         podAntiAffinity:
+          # Required: one bridge per node, 5 replicas across 5 nodes.
+          #
+          # Relaxing this to `preferred` so the Deployment could scale past the
+          # node count was tried while chasing the latency tail, and reverted.
+          # Two reasons, both measured:
+          #
+          #   * it does not help. A controlled 3-runs-each comparison at 5 vs
+          #     10 replicas (both counts verified) showed no significant
+          #     difference in ingest p99 -- 2236/3561/3356 ms at 5 against
+          #     3490/2868/2184 ms at 10, fully overlapping ranges.
+          #   * preferred-only does not actually spread. With it, the scheduler
+          #     placed all 5 replicas on pi2, the node with the most free
+          #     capacity, which is a worse topology than the one-per-node spread
+          #     this cluster is built around and was not the intent.
+          #
+          # Required anti-affinity also makes an over-replica-count experiment
+          # fail loudly-ish: surplus replicas stay Pending instead of running.
+          # That is a trap in its own right -- a rollout against it times out
+          # rather than failing, and the timeout can be discarded unnoticed, so
+          # a "10 replicas" measurement can silently be a 5-replica one. That is
+          # exactly the error in D20.
           requiredDuringSchedulingIgnoredDuringExecution:
           - labelSelector:
               matchLabels:

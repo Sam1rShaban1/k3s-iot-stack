@@ -1063,3 +1063,107 @@ before it goes near the live pipeline.
 Also note that the ConfigMap edit did not trigger a Benthos rollout -- the pods
 ran the previous day's config -- which is the D14 failure mode recurring in a
 second component. Worth adding the same content-hash mechanism there.
+
+---
+
+## D20a — CORRECTION to D20: the Benthos scaling result was an artifact
+
+**D20's conclusion was wrong and is withdrawn.** The claim that scaling the
+bridge from 5 to 10 replicas cut tail latency 4.5x was not a measurement. It was
+a broken experiment, and this entry records what happened so the error is not
+re-derived later.
+
+### What went wrong
+
+`manifests/benthos/deployment.yaml` carried
+`requiredDuringSchedulingIgnoredDuringExecution` anti-affinity — one Benthos per
+node, hard. On a five-node cluster that caps the Deployment at 5 replicas.
+Scaling to 10 therefore left 5 replicas **Pending**:
+
+```
+desired=10  ready=5  updated=5
+Running: 5   Pending: 5
+```
+
+`kubectl rollout status` against that does not fail — it **times out**. The
+experiment loop sent its output to `/dev/null` and never checked the exit
+status, so the timeout was invisible, and the benchmark that followed ran with
+5 replicas while being labelled "10".
+
+So D20's table compared two 5-replica runs against each other:
+
+| D20 claimed | actually measured |
+|---|---|
+| 1 replica  -> ingest p99 8,761 ms | 1 replica (correct) |
+| 5 replicas -> ingest p99 9,400 ms | 5 replicas (correct) |
+| 10 replicas -> ingest p99 **1,923 ms** | **5 replicas, rollout timed out** |
+
+The "4.5x improvement" was run-to-run variance, and it was read as a causal
+effect. D19 had already shown this cell swinging between roughly 2 s and 9.5 s at
+a constant replica count; that spread is the same size as the "effect".
+
+### The corrected experiment
+
+Anti-affinity relaxed to `preferred`, replicas set explicitly, and the ready
+count **read back and recorded** before every measurement. Three runs each:
+
+| Benthos | ready (verified) | ingest p99 per run | median | efficiency per run | median |
+|---|---|---|---|---|---|
+| 5 | 5 | 2236, 3561, 3356 ms | 3356 ms | 100.0, 99.45, 98.81% | 99.45% |
+| 10 | 10 | 3490, 2868, 2184 ms | 2868 ms | 99.15, 95.15, 98.66% | 98.66% |
+
+**No significant difference.** The ranges overlap almost entirely on both
+metrics. Ten bridge replicas is not better than five at 100 clients and
+2,000 msg/s.
+
+Relaxing the anti-affinity also turned out to be actively undesirable:
+`preferred` alone placed all five replicas on pi2, the node with the most free
+capacity. Required anti-affinity with 5 replicas is restored, giving one bridge
+per node, which is the topology the cluster is built around.
+
+### What D20 got right, and what is still open
+
+Still correct, and independently established:
+
+- The tail is **not** the storage path. Write stage p99 456 ms against ingest
+  p99 9,400 ms on the same run.
+- It is **not** CPU (6-14% per node during a run), **not** disk, **not**
+  VictoriaMetrics (write p50 17 ms), **not** the load generator (100 publishers
+  self-report 20.0 msg/s each, 0 errors), and **not** the network from the
+  workstation to the broker (ping p99 15 ms under full load).
+- It **is** in the stage `publisher -> EMQX -> Benthos -> NATS`, and that stage
+  is where essentially all of the tail lives.
+
+Still open: *which* hop inside that stage. Scaling Benthos does not move it, so
+the remaining candidate is EMQX itself — a single pod, and therefore both a
+serialisation point and a burst-queueing candidate, consistent with idle CPU and
+high variance. That is a hypothesis, not a result. Settling it needs either the
+`benthos_entry_ts` stamp (attempted in D20 and reverted: it silently destroyed
+the pipeline because Benthos's MQTT root is raw payload bytes) or a second
+instrumented hop at EMQX.
+
+**Method note, which is the transferable part.** Two separate experiments this
+session were invalidated by infrastructure state that looked like success:
+`kubectl apply` reporting a successful rollout that changed no pods (D14), and
+`kubectl rollout status` timing out on an unschedulable replica count while its
+output was discarded (here). Both produced plausible numbers. The habit that
+catches them is to read the *consequence* back — pod age, ready count,
+ReplicaSet — and record it next to the result, rather than trusting the command's
+exit narrative.
+
+### Memory, for the record
+
+The 8 GB per node constrained nothing here. With 10 Benthos replicas:
+
+| node | memory used | % |
+|---|---|---|
+| pi2 | 1531 Mi | 19% |
+| pi3 | 1989 Mi | 25% |
+| pi4 | 1410 Mi | 18% |
+| pi7 | 1961 Mi | 25% |
+| raspberrypi | 5211 Mi | 66% |
+
+Benthos runs at ~65 MiB resident against a 256 MiB request, so 10 replicas add
+roughly 512 MiB of requests per node. `raspberrypi` is the memory-heaviest node
+at 66%, carrying EMQX, ArgoCD, the local-path provisioner and Longhorn, and is
+the one to watch if the bridge is ever scaled much further.
