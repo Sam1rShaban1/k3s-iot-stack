@@ -294,16 +294,23 @@ def _find_pod() -> str:
     pod = os.environ.get("HARNESS_NATS_POD")
     if pod:
         return pod
-    out = subprocess.run(
-        [
-            "kubectl", "get", "pods",
-            "-n", CONSUMER_NAMESPACE,
-            "--field-selector", "status.phase=Running",
-            "-o", "jsonpath={.items[0].metadata.name}",
-        ],
-        capture_output=True, text=True, timeout=20, check=False,
-    )
-    return out.stdout.strip()
+    try:
+        out = subprocess.run(
+            [
+                "kubectl", "get", "pods",
+                "-n", CONSUMER_NAMESPACE,
+                "--field-selector", "status.phase=Running",
+                "-o", "jsonpath={.items[0].metadata.name}",
+            ],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        # A probe that cannot answer is "unreachable", not a crash. Without this
+        # a slow API server took the whole preflight down with a traceback
+        # instead of one FAIL line, which is exactly the moment the preflight
+        # is most needed.
+        return ""
+    return (out.stdout or "").strip()
 
 
 def _in_cluster_purge(stream: str) -> NatsResult:
@@ -322,14 +329,21 @@ def _in_cluster_purge(stream: str) -> NatsResult:
     # The snippet is a fixed literal -- no interpolation, no credentials, no
     # stream name spliced into a command line. The stream name is handed over
     # through the environment via `env`, so it never becomes Python source.
-    proc = subprocess.run(
-        [
-            "kubectl", "exec", "-n", CONSUMER_NAMESPACE, pod,
-            "--", "env", f"HARNESS_NATS_STREAM={stream}",
-            "python3", "-c", _IN_CLUSTER_SNIPPET,
-        ],
-        capture_output=True, text=True, timeout=60, check=False,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                "kubectl", "exec", "-n", CONSUMER_NAMESPACE, pod,
+                "--", "env", f"HARNESS_NATS_STREAM={stream}",
+                "python3", "-c", _IN_CLUSTER_SNIPPET,
+            ],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        return NatsResult(
+            False,
+            detail=(f"in-cluster probe via {pod} did not complete "
+                    f"({type(e).__name__}); stream {stream} NOT purged."),
+        )
     if proc.returncode != 0:
         return NatsResult(
             False,
@@ -478,16 +492,23 @@ def _probe_in_cluster(stream: str = STREAM) -> "JetStreamStats | None":
     pod = _find_pod()
     if not pod:
         return None
-    proc = subprocess.run(
-        [
-            "kubectl", "exec", "-n", CONSUMER_NAMESPACE, pod,
-            "--", "env",
-            f"HARNESS_NATS_STREAM={stream}",
-            f"HARNESS_NATS_DURABLE={_durable()}",
-            "python3", "-c", _STATS_SNIPPET,
-        ],
-        capture_output=True, text=True, timeout=60, check=False,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                "kubectl", "exec", "-n", CONSUMER_NAMESPACE, pod,
+                "--", "env",
+                f"HARNESS_NATS_STREAM={stream}",
+                f"HARNESS_NATS_DURABLE={_durable()}",
+                "python3", "-c", _STATS_SNIPPET,
+            ],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        # A probe that cannot answer is "unreachable", not a crash. A node that
+        # has just restarted can leave exec blocked for the full timeout, and
+        # that must not take the preflight down with a traceback -- the
+        # preflight is most needed exactly then.
+        return None
     for line in (proc.stdout or "").splitlines():
         if line.startswith("RESULT "):
             fields = json.loads(line.split(" ", 1)[1])

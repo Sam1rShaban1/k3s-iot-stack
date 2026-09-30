@@ -196,11 +196,16 @@ def main() -> int:
     if res.returncode != 0:
         sys.stderr.write(res.stderr)
         return res.returncode
-    # The saved/pushed name should be the original reference, so the tag the
-    # manifests request still resolves.
-    tagged = f"{registry}/{repository}:sideloaded"
-    subprocess.run(["docker", "tag", pinned, tagged], check=True)
-    print(tagged)
+    # Tag with the reference the manifests actually ask for.
+    #
+    # This matters more than it looks. `k3s ctr images import` records whatever
+    # name the archive carries, so tagging a placeholder like ":sideloaded"
+    # imports the image under a name no manifest references, and the pod stays
+    # in ImagePullBackOff while the import reports success. That is exactly what
+    # happened: the first Longhorn import "saved" cleanly and the detector still
+    # reported the image missing on that node.
+    subprocess.run(["docker", "tag", pinned, args.image], check=True)
+    print(args.image)
     return 0
 
 
