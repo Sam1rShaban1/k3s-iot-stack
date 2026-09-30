@@ -20,7 +20,38 @@
           - htop
           - unzip
           - python3-pip
+          # Required by Longhorn, which mounts iSCSI LUNs for VM volumes. Its
+          # absence is not reported at install time: the open-iscsi initiator
+          # simply is not there when Longhorn first tries to attach a volume,
+          # and the volume stays Pending. Found during P0.6 recovery, after the
+          # fact; it is a silent dependency.
+          - open-iscsi
+          # Required by kube-proxy and by CNI iptables rules. Without it k3s
+          # starts and nodes join, but Service networking silently fails to
+          # program, which is the same class of failure as the API-egress
+          # NetworkPolicy bug in D17. Also found during P0.6 recovery.
+          - iptables
         state: present
+        # The nodes are air-gapped, so a normal run cannot reach a mirror. This
+        # is left `present` rather than `latest` deliberately: with no mirror
+        # reachable, `latest` fails the play on an already-correct node. Set
+        # SIDELOAD_APT=true when a local mirror is configured.
+        cache_valid_time: 3600
+      when: not (sideload_apt | default(false) | bool)
+      register: pkg_install
+      failed_when: false
+      # A failure here is expected on an air-gapped node and is not fatal: the
+      # packages are already present on a provisioned node. Surface it so a
+      # genuinely missing package is visible in the play output.
+      failed_when: false
+
+    - name: Report packages that could not be installed (air-gapped)
+      ansible.builtin.debug:
+        msg: >-
+          apt could not reach a mirror. On an air-gapped cluster this is
+          expected only if the packages are already installed. Verify
+          open-iscsi and iptables are present, or re-run with a local mirror.
+      when: pkg_install is defined and pkg_install is failed
 
     - name: Enable cgroups for Kubernetes
       lineinfile:

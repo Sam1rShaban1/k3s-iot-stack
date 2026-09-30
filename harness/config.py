@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 # Metrics series the harness reads. Kept as constants because the report schema
@@ -130,9 +131,99 @@ def discover_emqx_address(namespace: str = "emqx") -> Optional[tuple[str, int]]:
         if _tcp_reachable(host, port):
             return host, port
 
-    # Nothing answered. Return the first candidate anyway so the failure is a
-    # clear connection error naming the address, rather than a silent default.
-    return ordered[0] if ordered else None
+    # Nothing answered. Do NOT fall back to the first candidate: the first
+    # candidate is the ClusterIP, which by definition just failed the probe, and
+    # the service CIDR is not routable from a workstation. Returning it anyway
+    # produced a run that published nothing and reported 0 messages at 0% of
+    # target, which reads as a pipeline result rather than a harness that could
+    # not find the broker.
+    #
+    # Fall back to the master's LAN address if one is known, since that is the
+    # address kubeconfig and the other cluster endpoints use, and it is on the
+    # same subnet as a workstation that can reach the API server.
+    for fallback in _fallback_brokers(namespace, service_port, node_port):
+        if _tcp_reachable(*fallback):
+            return fallback
+
+    return None
+
+
+def _fallback_brokers(
+    namespace: str, service_port: int, node_port: Optional[int]
+) -> list[tuple[str, int]]:
+    """Addresses to try when no advertised candidate answered.
+
+    Kubernetes only reports each node's InternalIP. That is enough while every
+    node's InternalIP is on a subnet the harness host can route to, and stops
+    being enough the moment it is not: a NodePort is programmed on every
+    address a node holds, including addresses Kubernetes never reports, so a
+    node reachable only on a secondary interface becomes invisible to discovery.
+
+    Two sources cover that gap without needing shell access to the nodes:
+
+      * `ansible/inventory.ini`, which records the address Ansible reaches each
+        node on, and is maintained to match the cluster;
+      * the kubeconfig server address, which is by definition routable from
+        whatever machine is running the harness.
+    """
+    out: list[tuple[str, int]] = []
+
+    port = int(node_port) if node_port else service_port
+
+    for host in _inventory_hosts():
+        out.append((host, port))
+
+    server = _kubeconfig_server_host()
+    if server:
+        out.append((server, port))
+
+    seen: set = set()
+    return [c for c in out if not (c in seen or seen.add(c))]
+
+
+def _repo_file(*parts: str) -> Optional[Path]:
+    return Path(__file__).resolve().parents[1].joinpath(*parts)
+
+
+def _inventory_hosts() -> list[str]:
+    """ansible_host values from ansible/inventory.ini, if the file is readable."""
+    path = _repo_file("ansible", "inventory.ini")
+    if not path or not path.is_file():
+        return []
+    hosts: list[str] = []
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", "[")):
+                continue
+            for token in line.split():
+                if token.startswith("ansible_host="):
+                    value = token.split("=", 1)[1]
+                    if value and value not in hosts:
+                        hosts.append(value)
+    except OSError:
+        return []
+    return hosts
+
+
+def _kubeconfig_server_host() -> Optional[str]:
+    """Host from the active kubeconfig server URL, if it can be read."""
+    try:
+        res = subprocess.run(
+            [
+                "kubectl", "config", "view", "--minify",
+                "-o", "jsonpath={.clusters[0].cluster.server}",
+            ],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    url = (res.stdout or "").strip()
+    if not url:
+        return None
+    # https://192.168.1.50:6443 -> 192.168.1.50
+    stripped = url.split("://", 1)[-1]
+    return stripped.split(":", 1)[0].split("/", 1)[0] or None
 
 
 def _node_addresses() -> list[str]:

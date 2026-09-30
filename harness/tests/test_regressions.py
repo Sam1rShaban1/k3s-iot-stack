@@ -15,9 +15,11 @@ import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from harness import config  # noqa: E402
 from harness.collect import Sample, parse_export  # noqa: E402
 from harness.report import build_scenario_report, latency_stats, percentile  # noqa: E402
 from harness.runner import pick_latency  # noqa: E402
@@ -182,3 +184,109 @@ class TestRealCorpusRegression(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestBrokerDiscoveryNeverReturnsAProbeFailure(unittest.TestCase):
+    """Discovery must not hand back an address it just proved unreachable.
+
+    After pi7 moved to a static address on the wired segment, the only
+    advertised node addresses (10.0.0.x) were unroutable from the workstation.
+    The probe correctly rejected every candidate, and the function then returned
+    the first candidate anyway -- the ClusterIP, which is in the service CIDR
+    and never routable from outside the cluster. The result was a benchmark run
+    that published nothing and reported 0 messages at 0% of target, which reads
+    as a pipeline result rather than a harness that could not find the broker.
+
+    Kubernetes only reports each node's InternalIP, so a node reachable solely
+    on a secondary interface is invisible to discovery. The fallbacks cover that
+    from the ansible inventory and the kubeconfig server address.
+    """
+
+    def test_returns_none_when_nothing_answers_and_no_fallback_works(self):
+        with mock.patch.object(config, "kubectl_json", return_value={
+            "spec": {"clusterIP": "10.43.81.69",
+                     "ports": [{"name": "mqtt", "port": 1883, "nodePort": 31883}]},
+            "status": {},
+        }):
+            with mock.patch.object(config, "_node_addresses", return_value=["10.0.0.2"]):
+                with mock.patch.object(config, "_master_node_ip", return_value="10.0.0.1"):
+                    with mock.patch.object(config, "_tcp_reachable", return_value=False):
+                        self.assertIsNone(config.discover_emqx_address())
+
+    def test_does_not_return_the_clusterip(self):
+        with mock.patch.object(config, "kubectl_json", return_value={
+            "spec": {"clusterIP": "10.43.81.69",
+                     "ports": [{"name": "mqtt", "port": 1883, "nodePort": 31883}]},
+            "status": {},
+        }):
+            with mock.patch.object(config, "_node_addresses", return_value=[]):
+                with mock.patch.object(config, "_master_node_ip", return_value=None):
+                    with mock.patch.object(config, "_tcp_reachable", return_value=False):
+                        got = config.discover_emqx_address()
+        self.assertNotEqual(got, ("10.43.81.69", 1883))
+
+    def test_reachable_nodeport_still_wins(self):
+        with mock.patch.object(config, "kubectl_json", return_value={
+            "spec": {"clusterIP": "10.43.81.69",
+                     "ports": [{"name": "mqtt", "port": 1883, "nodePort": 31883}]},
+            "status": {},
+        }):
+            with mock.patch.object(config, "_node_addresses", return_value=["10.0.0.2"]):
+                with mock.patch.object(config, "_master_node_ip", return_value=None):
+                    with mock.patch.object(
+                        config, "_tcp_reachable",
+                        side_effect=lambda h, p, **k: h == "10.0.0.2",
+                    ):
+                        self.assertEqual(
+                            config.discover_emqx_address(), ("10.0.0.2", 31883)
+                        )
+
+    def test_falls_back_to_the_kubeconfig_server(self):
+        with mock.patch.object(config, "kubectl_json", return_value={
+            "spec": {"clusterIP": "10.43.81.69",
+                     "ports": [{"name": "mqtt", "port": 1883, "nodePort": 31883}]},
+            "status": {},
+        }):
+            with mock.patch.object(config, "_node_addresses", return_value=[]):
+                with mock.patch.object(config, "_master_node_ip", return_value=None):
+                    with mock.patch.object(config, "_inventory_hosts", return_value=[]):
+                        with mock.patch.object(
+                            config, "_kubeconfig_server_host", return_value="192.168.1.50"
+                        ):
+                            with mock.patch.object(
+                                config, "_tcp_reachable",
+                                side_effect=lambda h, p, **k: h == "192.168.1.50",
+                            ):
+                                self.assertEqual(
+                                    config.discover_emqx_address(),
+                                    ("192.168.1.50", 31883),
+                                )
+
+    def test_kubeconfig_host_is_parsed_from_a_url(self):
+        for url, want in [
+            ("https://192.168.1.50:6443", "192.168.1.50"),
+            ("https://node.example:6443/", "node.example"),
+            ("", None),
+        ]:
+            with self.subTest(url=url):
+                with mock.patch.object(
+                    config.subprocess, "run",
+                    return_value=mock.Mock(stdout=url, returncode=0),
+                ):
+                    self.assertEqual(config._kubeconfig_server_host(), want)
+
+    def test_inventory_hosts_are_extracted(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d) / "inventory.ini"
+            fake.write_text(
+                "# comment\n[all:vars]\nk3s_version=v1\n"
+                "master ansible_host=192.168.1.50 ansible_user=master\n"
+                "pi7 ansible_host=10.0.0.2 ansible_user=pi7\n"
+            )
+            with mock.patch.object(config, "_repo_file", return_value=fake):
+                self.assertEqual(
+                    config._inventory_hosts(), ["192.168.1.50", "10.0.0.2"]
+                )

@@ -778,3 +778,91 @@ The local host is x86_64, so `docker save` of the arm64 Longhorn image produces 
 amd64 archive; an arm64-capable pull path is needed. This is a prerequisite for
 P1 observability (Prometheus PVC, Loki, Tempo), so it should be scheduled as its
 own piece of work rather than absorbed into it.
+
+---
+
+## D18 — static node addressing, and three consequences that were not obvious
+
+The wired segment now carries fixed addresses, so cluster addressing no longer
+depends on DHCP. Final state, all five nodes advertising from 10.0.0.0/24:
+
+| node | eth0 | wlan0 | k3s_node_ip |
+|---|---|---|---|
+| raspberrypi | 10.0.0.1 | 192.168.1.50 | 10.0.0.1 |
+| pi7 | 10.0.0.2 | 192.168.1.162 | 10.0.0.2 |
+| pi2 | 10.0.0.3 | — | 10.0.0.3 |
+| pi3 | 10.0.0.4 | — | 10.0.0.4 |
+| pi4 | 10.0.0.5 | — | 10.0.0.5 |
+
+`ansible/inventory.ini` had two stale entries as a result. pi2 was recorded as
+`192.168.1.189`, a DHCP address captured in P0.3 that no longer applied, and
+pi7 as `192.168.1.162`. Both now record the wired-segment address, and the file
+explains that the 10.0.0.0/24 segment is not routable from a workstation on
+192.168.1.0/24, so provisioning has to run from a host on the wired segment.
+
+pi7 was re-joined onto 10.0.0.2 by editing `--node-ip` in
+`/etc/systemd/system/k3s-agent.service` and restarting `k3s-agent`. Backup at
+`k3s-agent.service.bak-pre-nodeip`. The kubelet came back immediately serving a
+certificate for 10.0.0.2 and the Node object followed within ~45 s; no Node
+deletion or data-dir clean was needed. Note the value sits on its own line in
+the unit file, so a single-line regex will not match it.
+
+### (a) The harness stopped finding the broker, and reported it as a pipeline result
+
+Once pi7 advertised 10.0.0.2, every node address the harness could see was on
+the wired segment and unreachable from the workstation. Discovery probes each
+candidate and correctly rejected all of them -- and then returned the first
+candidate anyway:
+
+```python
+# Nothing answered. Return the first candidate anyway so the failure is a
+# clear connection error naming the address, rather than a silent default.
+return ordered[0] if ordered else None
+```
+
+The first candidate is the ClusterIP, which lives in the service CIDR and is
+never routable from outside the cluster. The run that followed published nothing
+and reported `stored=0 ... eff=0.0%`, which reads as a measurement rather than as
+a harness that could not find the broker.
+
+Root cause underneath: Kubernetes reports only each node's InternalIP, and a
+NodePort is programmed on *every* address a node holds. A node reachable only on
+a secondary interface is therefore invisible to discovery. There is no fix in
+the API for that, so discovery now falls back to addresses it can legitimately
+know: the `ansible_host` values in the inventory, and the kubeconfig server
+address, which is routable from whatever machine is running the harness. With
+that it resolves to `192.168.1.50:31883` and the scenario runs at 96.89%.
+
+It also never returns an address that failed its own probe again.
+
+### (b) MetalLB advertises the wrong interface for its address pool
+
+`files/metallb-config.yaml` allocates `192.168.1.240-192.168.1.250` and
+advertises it on:
+
+```yaml
+  interfaces:
+  - eth0
+```
+
+On these nodes `eth0` is the **wired cluster segment (10.0.0.0/24)**;
+192.168.1.0/24 is the home LAN, which on pi7 is `wlan0`. An L2 advertisement
+for a 192.168.1.x address on an interface whose subnet is 10.0.0.0/24 cannot
+work. This is consistent with EMQX having no reachable LoadBalancer address:
+P0.3 recorded the intent to expose EMQX as a `LoadBalancer` with
+`loadBalancerIP: 192.168.1.241`, but the live service is still `NodePort` and
+nothing is listening on 192.168.1.241.
+
+**Not fixed here.** The fix needs the per-node interface layout, which means
+inspecting every node's interfaces rather than pi7's alone, and the
+advertisement interface may differ per node. Guessing it would produce a broker
+address that appears healthy and silently drops traffic. Flagged as the
+remaining prerequisite for a stable, node-independent broker endpoint.
+
+### (c) The D17 netpol fix is unaffected
+
+Worth stating explicitly, because the endpoint the policy has to allow moves
+when the advertised address does. The rule allows `10.0.0.0/16` and
+`192.168.1.0/24` on 443/6443, so it covers the API server whether it is reached
+at 10.0.0.1:6443 (the endpoint other nodes see) or 192.168.1.50:6443 (the LAN
+address). `apiserver-egress` still passes and the pipeline is unaffected.
