@@ -125,6 +125,74 @@ class TestKustomizeRendersAndLinks(unittest.TestCase):
         self.assertEqual(self.out, out2, "render is not deterministic")
 
 
+class TestNoDuplicatedSeries(unittest.TestCase):
+    """The ack pass must add series, not re-emit the payload.
+
+    An earlier version of the two-pass write called the same renderer in both
+    passes, so VictoriaMetrics held exactly twice as many samples of
+    iot_sensor_ts and iot_sensor_nats_exit_ts as of latency_ms for the same
+    messages: 55,720 against 27,860 in one 10c_1000r run. No error was raised,
+    latency and throughput were unaffected, and it doubled the write volume.
+    Only counting samples per series revealed it.
+    """
+
+    MESSAGE = {
+        "device_id": "d1", "ts": 1000, "pm1": 1.5, "pm25": 2.5,
+        "pm10": 3.0, "temp": 20.0, "hum": 40.0,
+    }
+
+    def _functions(self):
+        tree = ast.parse(CONSUMER.read_text())
+        ns = {}
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name in (
+                "format_metrics", "format_metrics_ack", "_render"
+            ):
+                exec(compile(ast.Module([node], []), "<f>", "exec"), ns)
+        return ns
+
+    @staticmethod
+    def _names(lines):
+        return {l.split("{")[0] for l in lines}
+
+    def test_ack_pass_emits_no_payload_series(self):
+        ns = self._functions()
+        first = ns["format_metrics"](dict(self.MESSAGE), 1100)
+        second = ns["format_metrics_ack"](dict(self.MESSAGE), 1250)
+        self.assertEqual(self._names(first) & self._names(second), set())
+
+    def test_ack_pass_emits_exactly_the_two_stamps(self):
+        ns = self._functions()
+        second = ns["format_metrics_ack"](dict(self.MESSAGE), 1250)
+        self.assertEqual(len(second), 2)
+        self.assertEqual(
+            self._names(second),
+            {"iot_sensor_vm_write_ack_ts", "iot_sensor_latency_ms"},
+        )
+
+    def test_payload_pass_is_complete(self):
+        ns = self._functions()
+        first = ns["format_metrics"](dict(self.MESSAGE), 1100)
+        for field in ("ts", "pm1", "pm25", "pm10", "temp", "hum", "nats_exit_ts"):
+            self.assertIn(f"iot_sensor_{field}", self._names(first))
+
+    def test_latency_is_ack_minus_sensor(self):
+        ns = self._functions()
+        second = ns["format_metrics_ack"](dict(self.MESSAGE), 1250)
+        self.assertIn('iot_sensor_latency_ms{device_id="d1"} 250', second)
+
+    def test_render_respects_the_only_filter(self):
+        ns = self._functions()
+        out = ns["_render"](dict(self.MESSAGE), "d1", only=("ts",))
+        self.assertEqual(out, ['iot_sensor_ts{device_id="d1"} 1000'])
+
+    def test_render_skips_non_numeric_and_bool(self):
+        ns = self._functions()
+        data = {"device_id": "d", "ok": True, "name": "x", "n": None, "v": 1}
+        out = ns["_render"](data, "d")
+        self.assertEqual(out, ['iot_sensor_v{device_id="d"} 1'])
+
+
 class TestMeasurementContract(unittest.TestCase):
     """The properties the paper's claims rest on, pinned against the real file."""
 

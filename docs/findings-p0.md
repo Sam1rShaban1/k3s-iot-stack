@@ -551,3 +551,137 @@ and its own documented resync command overwrote the header explaining where the
 real source was. `harness/validate.py` now fails if a hand-written
 `configmap.yaml` reappears, and `make render-manifests` fails if any
 kustomization does not render.
+
+---
+
+## D15 — the paper's QoS serialization ceiling was the load generator, not the protocol
+
+Found on 2026-09-29 while investigating why measured efficiency sat at ~93% while
+the publisher demonstrably offered 98.7% of target against a local stub.
+
+### The symptom
+
+Running the same scenario at QoS 1 instead of QoS 0:
+
+| QoS | throughput | efficiency |
+|---|---|---|
+| 0 | 833 msg/s | 83.3% |
+| 1 | **86 msg/s** | **8.6%** |
+
+A ten-fold collapse from a flag that should only add an acknowledgement.
+
+### Root cause
+
+Paho C defaults `maxInflightMessages` to **10**. `publisher.c` never set it, so
+at QoS 1 the in-flight window filled almost immediately. Measured against the
+local stub with 1 client and no sleep at all:
+
+| target | published in 12.1 s | achieved |
+|---|---|---|
+| 100 msg/s | 120 | 9.95 msg/s |
+| 500 msg/s | 120 | 9.95 msg/s |
+| 1000 msg/s | 120 | 9.95 msg/s |
+
+Exactly 120 messages regardless of the target — a hard 10/s per process, entirely
+inside the client. The publisher also blocked inside `publish()` when the
+window could not drain, so it never reached its `--duration` check and had to be
+killed. The existing test suite noticed the symptom and misattributed it:
+
+> QoS 1 and 2 cannot be exercised against the stub: it does not implement the
+> PUBACK/PUBREC handshake, so paho blocks until the process is killed.
+
+The stub was not the cause; the missing in-flight window was.
+
+### A wrong fix, caught by measurement
+
+The first attempt added `MQTTClient_yield()` per iteration to "process PUBACKs",
+on the reasoning that nothing was reading the socket. That made it *worse* and
+revealed the real story:
+
+| build, QoS 1, 1 client, 8 s, no sleep | published | achieved |
+|---|---|---|
+| with `MQTTClient_yield()` | 80 | 9.95 msg/s |
+| without | 66,001 | **8,249 msg/s** |
+
+`MQTTClient_yield()` blocks for ~100 ms in this Paho build even with nothing
+pending, so calling it in the hot loop *was* the 100 ms. This Paho version runs
+its own sender thread, so no pump is needed at all. The yield call is now gone
+and a comment warns against reintroducing it.
+
+### The fix
+
+`conn_opts.maxInflightMessages = 1000` when `qos > 0`, plus a `--max-inflight`
+flag. QoS 0 is left at Paho's default so the historical measurement path is
+untouched. Deliberately *not* used: waiting per PUBACK, which would cap the rate
+at one per round trip and measure the round trip rather than the broker.
+
+`mqtt_stub.py` also gained the QoS 1 handshake (PUBACK, DUP accounting) and
+`TCP_NODELAY` on accepted sockets. Without PUBACK the QoS 1 path could not be
+tested at all, which is why the defect survived.
+
+### Result
+
+Publisher, local stub, 10 and 100 clients:
+
+| clients | target | QoS 0 | QoS 1 |
+|---|---|---|---|
+| 10 | 500 | 99.3% | 99.3% |
+| 10 | 1000 | 98.8% | 98.3% |
+| 10 | 2000 | 98.0% | 96.8% |
+| 100 | 2000 | 93.1% | 93.2% |
+
+Full cluster, 10 clients x 1000 msg/s x 30 s, after the fix:
+
+| QoS | throughput | efficiency | p99 |
+|---|---|---|---|
+| 0 | 973.41 msg/s | 97.34% | 1758 ms |
+| 1 | 947.23 msg/s | 94.72% | 1260 ms |
+
+QoS 1 went from 8.63% to 94.72%.
+
+### Consequence for the paper
+
+**Paper §V-C's "~50 msg/s per connection serialization ceiling" is an artifact of
+the load generator and must not be reported as a property of QoS 2 or of the
+cluster.** It is Paho C's default in-flight window of 10. The QoS 2 figure needs
+re-measuring on this fixed build; the test that would do it is still skipped
+because the stub does not implement the four-way QoS 2 handshake, and its skip
+message now says so.
+
+QoS 1 costs a few percent, not an order of magnitude, and the benchmark's default
+QoS 0 remains the right choice for a throughput study. The loss at QoS 0 is
+therefore the honest price of the cheaper path, and should be stated as such
+rather than read as a pipeline defect.
+
+---
+
+## D16 — the ack pass re-emitted the whole payload, doubling every series
+
+Found on 2026-09-29 while decomposing where end-to-end latency was spent.
+
+Counting samples per series in one 10c_1000r run:
+
+| series | samples |
+|---|---|
+| `iot_sensor_ts` | 55,720 |
+| `iot_sensor_nats_exit_ts` | 55,720 |
+| `iot_sensor_vm_write_ack_ts` | 27,860 |
+| `iot_sensor_latency_ms` | 27,860 |
+
+Exactly 2:1. The D11 two-pass write introduced this: `format_metrics_ack()`
+called the same `_render(data, device)` as pass 1, so the second request
+re-emitted every field in `data` rather than only the two new stamps. Per message
+the consumer wrote 16 series where 9 were needed.
+
+No error was raised, and latency and throughput were unaffected, so nothing in the
+report was wrong — but the write volume, the ingestion cost and the storage were
+all doubled for no additional information. It was visible only by counting
+samples per series.
+
+`format_metrics_ack` now passes `only=("vm_write_ack_ts", "latency_ms")`, and
+`_render` honours that filter. Six regression tests cover it, including one that
+asserts the two passes emit disjoint series. Verified on the cluster: pass-1 and
+pass-2 series counts now match exactly.
+
+This also contributed to the efficiency gap: at 1000 msg/s, efficiency moved
+from ~93% to 97.3% once the consumer stopped writing twice as much as needed.

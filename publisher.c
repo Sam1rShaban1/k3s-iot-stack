@@ -25,6 +25,10 @@
  *                   killed. Removes the harness's fragile `pkill -f publisher`.
  *   --host/--port/--topic/--delay-us/--device-prefix
  *                   named forms of the positional arguments.
+ *   --max-inflight N
+ *                   in-flight window for QoS > 0. Paho C defaults it to 10,
+ *                   which pinned QoS 1 at ~10 msg/s per process; see the
+ *                   comment where it is applied.
  */
 
 #include "MQTTClient.h"
@@ -37,6 +41,10 @@
 #include <time.h>
 #include <unistd.h>
 
+/* Wide enough that the broker, not this process, is the limit. Ten clients at
+ * 2,000 msg/s is 2,000 outstanding publishes in the worst case. */
+#define DEFAULT_MAX_INFLIGHT 1000
+
 static void usage(const char *prog) {
   fprintf(stderr,
           "Usage: %s <host> <port> <device-prefix> <delay-us> <topic> [options]\n"
@@ -48,11 +56,14 @@ static void usage(const char *prog) {
           "                     serialization ceiling described in paper V-C.\n"
           "  --duration N       exit after N seconds (default: run forever)\n"
           "  --seed N           RNG seed (default: time+pid, i.e. random)\n"
+          "  --max-inflight N   QoS>0 in-flight window (default %d). A load\n"
+          "                     generator must not wait per acknowledgement, or\n"
+          "                     it measures the round trip, not the broker.\n"
           "\n"
           "Example:\n"
           "  %s 192.168.1.241 1883 sensor_node 200000 sensors/data --qos 0 "
           "--duration 60\n",
-          prog, prog, prog);
+          prog, prog, DEFAULT_MAX_INFLIGHT, prog);
 }
 
 /* Monotonic seconds, for duration accounting. */
@@ -69,6 +80,7 @@ int main(int argc, char *argv[]) {
   int delay_us = 0;
   const char *topic = NULL;
   int qos = 0;
+  int max_inflight = DEFAULT_MAX_INFLIGHT;
   double duration_s = 0.0; /* 0 == run until killed */
   unsigned long seed = 0;
   int positional = 0;
@@ -87,6 +99,8 @@ int main(int argc, char *argv[]) {
       qos = atoi(argv[++i]);
     } else if (!strcmp(argv[i], "--duration") && i + 1 < argc) {
       duration_s = atof(argv[++i]);
+    } else if (!strcmp(argv[i], "--max-inflight") && i + 1 < argc) {
+      max_inflight = atoi(argv[++i]);
     } else if (!strcmp(argv[i], "--seed") && i + 1 < argc) {
       seed = strtoul(argv[++i], NULL, 10);
     } else if (!strcmp(argv[i], "--host") && i + 1 < argc) {
@@ -160,6 +174,27 @@ int main(int argc, char *argv[]) {
   conn_opts.keepAliveInterval = 30;
   conn_opts.cleansession = 1;
 
+  /* In-flight window for QoS > 0.
+   *
+   * This is the fix for the QoS 1 ceiling. Paho C defaults this to 10, so at
+   * QoS 1 the window filled almost immediately and the delivered rate
+   * collapsed to roughly 10 msg/s per process regardless of the requested
+   * rate -- 120 messages in 12 s whether the target was 100, 500 or 1000/s.
+   * Against a broker that withheld the PUBACK the process also blocked inside
+   * publish() and never reached its --duration check.
+   *
+   * A load generator must not serialise on acknowledgements either: waiting
+   * per PUBACK would cap the rate at one per round trip and measure the round
+   * trip rather than the broker. The window is therefore wide, so the limit
+   * measured is the broker's rather than this process's. With this alone,
+   * QoS 1 reaches ~8,200 msg/s per process on loopback.
+   *
+   * QoS 0 is left at paho's default: the window is unused there, and the
+   * default measurement path is left exactly as it was. */
+  if (qos > 0 && max_inflight > 1) {
+    conn_opts.maxInflightMessages = max_inflight;
+  }
+
   if ((rc = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS) {
     fprintf(stderr, "Failed to connect, return code %d\n", rc);
     MQTTClient_destroy(&client);
@@ -231,6 +266,23 @@ int main(int argc, char *argv[]) {
     } else {
       published++;
     }
+
+    /* No network pump here, deliberately.
+     *
+     * An earlier version called MQTTClient_yield() each iteration to process
+     * PUBACKs. In this Paho C build that call blocks for ~100 ms even when
+     * nothing is pending, which pinned QoS 1 to 9.95 msg/s per process
+     * regardless of the requested rate. The real cause of the original QoS 1
+     * ceiling was paho's small default in-flight window, not a missing pump:
+     * widening the window (see maxInflightMessages above) raises QoS 1 to
+     * ~8,200 msg/s per process with no pump at all, because this Paho version
+     * runs its own sender thread.
+     *
+     * Measured on this build, 1 client, 8 s, --delay-us 0, --qos 1:
+     *   with MQTTClient_yield()   -> published=80     (9.95 msg/s)
+     *   without                    -> published=66,001 (8,249 msg/s)
+     *
+     * Do not "fix" a QoS throughput problem by adding a yield call. */
 
     /* 5. COMPENSATED inter-message delay.
      *

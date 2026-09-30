@@ -227,11 +227,10 @@ class TestPublisher(unittest.TestCase):
     def test_qos_flag_is_accepted(self):
         """The publisher must accept and validate --qos without a real broker.
 
-        QoS 1 and 2 cannot be exercised against the stub: it does not implement
-        the PUBACK/PUBREC handshake, so paho blocks until the process is killed.
-        Confirming the serialized QoS level therefore requires the real EMQX
-        broker. That measurement is cluster-gated, and is the experiment that
-        reproduces the ~50 msg/s per-connection ceiling in paper §V-C.
+        The level is validated from the arguments, so a closed port is enough to
+        confirm a valid value is accepted and an out-of-range one is rejected
+        before any connection is attempted. QoS 1 is separately exercised
+        against the stub in TestQos1RateIsNotWindowLimited.
         """
         for qos in (0, 1, 2):
             with self.subTest(qos=qos):
@@ -248,8 +247,10 @@ class TestPublisher(unittest.TestCase):
 
     @unittest.skip(
         "requires a real MQTT broker: the local stub does not implement the "
-        "QoS 1/2 acknowledgement handshake. Run against EMQX to reproduce the "
-        "serialization ceiling in paper V-C."
+        "QoS 2 PUBREC/PUBREL/PUBCOMP handshake. Note that the QoS 1 ceiling "
+        "this test was written to characterise turned out to be paho's "
+        "in-flight window rather than the protocol -- see D15 -- so the QoS 2 "
+        "figure should be re-measured after the same fix is validated there."
     )
     def test_qos_two_ceiling(self):
         """Measure the QoS 2 per-connection ceiling against a real broker.
@@ -276,3 +277,109 @@ class TestPublisher(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestQos1RateIsNotWindowLimited(unittest.TestCase):
+    """QoS 1 must not be capped by paho's default in-flight window.
+
+    Paho C defaults maxInflightMessages to 10, so at QoS 1 the window filled
+    immediately and the delivered rate collapsed to ~10 msg/s per process
+    regardless of the requested rate: exactly 120 messages in 12 s whether the
+    target was 100, 500 or 1000/s. publisher.c now widens the window, which puts
+    QoS 1 within a couple of percent of QoS 0.
+
+    This is also the finding that undercuts paper §V-C's "~50 msg/s per
+    connection serialization ceiling": that number was the in-flight window, not
+    the protocol. See docs/findings-p0.md D15.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        tmp = tempfile.NamedTemporaryFile(suffix="_publisher", delete=False)
+        tmp.close()
+        cls._tmp_path = tmp.name
+        cls.binary = build_publisher(tmp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            os.unlink(cls._tmp_path)
+        except OSError:
+            pass
+
+    def _offered(self, qos, clients=4, rate=200, duration=8):
+        port = free_port()
+        broker = StubBroker(port)
+        try:
+            delay_us = int(1_000_000 * clients / rate)
+            procs = [
+                subprocess.Popen(
+                    [self.binary, "--host", "127.0.0.1", "--port", str(port),
+                     "--device-prefix", f"qos{qos}_{i}", "--delay-us", str(delay_us),
+                     "--topic", "sensors/data", "--duration", str(duration),
+                     "--qos", str(qos)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                for i in range(clients)
+            ]
+            for p in procs:
+                p.wait(timeout=40)
+            snap = broker.stats()
+        finally:
+            broker.stop()
+        span = snap.get("span_s") or duration
+        offered = snap.get("publishes", 0) / span if span else 0.0
+        return offered, snap
+
+    def test_qos1_honours_the_requested_rate(self):
+        offered, snap = self._offered(qos=1)
+        self.assertIn(1, snap.get("qos_seen", []))
+        # Far above the window-limited ~10/s per process, and close to target:
+        # the acknowledgement round trip must not cost an order of magnitude.
+        self.assertGreater(offered, 100, f"QoS 1 offered only {offered:.1f}/s")
+        self.assertGreater(offered / 200.0, 0.8, f"QoS 1 at {offered:.1f}/s of 200")
+
+    def test_qos1_is_close_to_qos0(self):
+        zero, _ = self._offered(qos=0)
+        one, _ = self._offered(qos=1)
+        self.assertGreater(
+            one, zero * 0.5,
+            f"QoS 1 ({one:.0f}/s) far below QoS 0 ({zero:.0f}/s)",
+        )
+
+    def test_qos1_handshake_completes_without_redelivery(self):
+        _, snap = self._offered(qos=1)
+        self.assertEqual(snap.get("redelivered", 0), 0)
+        self.assertEqual(snap.get("errors", []), [])
+
+    def test_publisher_exits_on_duration_at_qos1(self):
+        """It used to block inside publish() and never reach the duration check."""
+        port = free_port()
+        broker = StubBroker(port)
+        try:
+            res = subprocess.run(
+                [self.binary, "--host", "127.0.0.1", "--port", str(port),
+                 "--device-prefix", "dur", "--delay-us", "1000",
+                 "--topic", "sensors/data", "--duration", "3", "--qos", "1"],
+                capture_output=True, text=True, timeout=30,
+            )
+        finally:
+            broker.stop()
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("achieved=", res.stdout)
+
+    def test_max_inflight_flag_is_accepted(self):
+        port = free_port()
+        broker = StubBroker(port)
+        try:
+            res = subprocess.run(
+                [self.binary, "--host", "127.0.0.1", "--port", str(port),
+                 "--device-prefix", "mi", "--delay-us", "1000",
+                 "--topic", "sensors/data", "--duration", "2", "--qos", "1",
+                 "--max-inflight", "500"],
+                capture_output=True, text=True, timeout=30,
+            )
+        finally:
+            broker.stop()
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertNotIn("unknown option", res.stderr)

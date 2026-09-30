@@ -154,22 +154,33 @@ def format_metrics(data, nats_exit_ts):
     return _render(data, device)
 
 def format_metrics_ack(data, ack_ts):
-    """Second pass: acknowledgement stamps, written after the POST returns.
+    """Second pass: the acknowledgement stamps, written after the POST returns.
 
-    Carries vm_write_ack_ts and latency_ms only. The payload is already
-    stored by the time this runs, so a failure here costs the latency
-    series rather than the measurement.
+    Emits ONLY vm_write_ack_ts and latency_ms. The payload is already stored
+    by the time this runs, so a failure here costs the latency series rather
+    than the measurement.
+
+    It must not re-render the rest of the payload. An earlier version called
+    the same _render(data, device) as pass 1, which re-emitted every field:
+    VictoriaMetrics then held exactly twice as many samples of iot_sensor_ts
+    and iot_sensor_nats_exit_ts as of latency_ms, for the same messages. The
+    consumer wrote twice the series it needed, doubling the write volume and
+    the ingestion cost for no additional information. The symptom was visible
+    only by counting samples per series -- no error, and the reported latency
+    and throughput were unaffected, so it would have gone unnoticed.
     """
     device = data.get("device_id", "unknown")
     data["vm_write_ack_ts"] = ack_ts
     sensor_ts = data.get("ts")
     if sensor_ts is not None:
         data["latency_ms"] = ack_ts - sensor_ts
-    return _render(data, device)
+    return _render(data, device, only=("vm_write_ack_ts", "latency_ms"))
 
-def _render(data, device):
+def _render(data, device, only=None):
     lines = []
     for k, v in data.items():
+        if only is not None and k not in only:
+            continue
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             lines.append('iot_sensor_%s{device_id="%s"} %s' % (k, device, v))
     return lines

@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Minimal MQTT 3.1.1 broker stub, just enough to exercise publisher.c.
 
-Accepts CONNECT, replies CONNACK, counts PUBLISH packets, answers PINGREQ.
-Deliberately does not implement QoS 1/2 handshakes, so it can only fully
-exercise QoS 0; QoS >= 1 is accepted at the protocol level but the ack
-handshake is ignored, which is enough to verify the publisher's rate loop.
+Accepts CONNECT, replies CONNACK, counts PUBLISH packets, completes the QoS 1
+handshake with PUBACK, and answers PINGREQ.
+
+QoS 1 is fully implemented because its cost is a headline result: it adds an
+acknowledgement round trip per publish, and this stub is the only place that
+cost can be attributed to the publisher rather than to the cluster. The earlier
+version accepted QoS 1 at the protocol level but never acknowledged, so a QoS 1
+publisher filled its in-flight window, blocked inside publish(), and never
+reached its --duration check. QoS 2 is deliberately not implemented and says so
+rather than pretending, since publisher.c does not use it.
 
 Used by harness/tests/test_publisher_rate.py.
 """
@@ -34,6 +40,15 @@ def read_remaining_length(sock: socket.socket) -> int:
 
 
 def handle(conn: socket.socket, stats: dict, lock: threading.Lock) -> None:
+    # PUBACK is a 4-byte write. Without TCP_NODELAY, Nagle holds it back waiting
+    # for more data to coalesce with, and the peer sees a ~40-100 ms stall per
+    # acknowledged publish. That showed up as a hard ceiling of exactly 10
+    # publishes per second at QoS 1, independent of the requested rate, which
+    # looked like a protocol cost and was not: it was this stub's socket.
+    try:
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
     try:
         while True:
             header = conn.recv(1)
@@ -56,24 +71,44 @@ def handle(conn: socket.socket, stats: dict, lock: threading.Lock) -> None:
 
             elif ptype == 3:  # PUBLISH
                 qos = (flags >> 1) & 0x03
-                if qos == 0:
-                    topic_len = struct.unpack(">H", body[:2])[0]
-                    topic = body[2 : 2 + topic_len].decode(errors="replace")
-                    payload = body[2 + topic_len :]
+                topic_len = struct.unpack(">H", body[:2])[0]
+                topic = body[2 : 2 + topic_len].decode(errors="replace")
+                rest = body[2 + topic_len :]
+                packet_id = None
+                if qos > 0:
+                    if len(rest) < 2:
+                        with lock:
+                            stats["errors"].append(
+                                f"QoS {qos} PUBLISH with no packet id"
+                            )
+                        continue
+                    packet_id = rest[:2]
+                    rest = rest[2:]
+                payload = rest
+                with lock:
+                    stats["publishes"] += 1
+                    stats["payload_bytes"] += len(payload)
+                    stats["payloads"].append(payload)
+                    stats["first_ts"] = stats["first_ts"] or time.time()
+                    stats["last_ts"] = time.time()
+                    stats["topics"].add(topic)
+                    stats["qos_seen"].add(qos)
+                    if flags & 0x08:  # DUP
+                        stats["redelivered"] += 1
+                if qos == 1:
+                    # PUBACK is what makes the QoS 1 handshake complete. Without
+                    # it the publisher's in-flight window fills, its publishes
+                    # stop being accepted, and it blocks inside publish() -- so
+                    # it never reaches its --duration check and hangs. That made
+                    # the QoS 1 path untestable here, and left the throughput
+                    # cost of QoS 1 unmeasurable.
+                    conn.sendall(b"\x40\x02" + packet_id)
+                elif qos == 2:
+                    # QoS 2 needs PUBREC/PUBREL/PUBCOMP. Not implemented; the
+                    # publisher does not use it, and silently pretending
+                    # otherwise would hide that.
                     with lock:
-                        stats["publishes"] += 1
-                        stats["payload_bytes"] += len(payload)
-                        stats["payloads"].append(payload)
-                        stats["first_ts"] = stats["first_ts"] or time.time()
-                        stats["last_ts"] = time.time()
-                        stats["topics"].add(topic)
-                        stats["qos_seen"].add(qos)
-                else:
-                    with lock:
-                        stats["publishes"] += 1
-                        stats["qos_seen"].add(qos)
-                        stats["first_ts"] = stats["first_ts"] or time.time()
-                        stats["last_ts"] = time.time()
+                        stats["errors"].append("QoS 2 is not implemented")
 
             elif ptype == 12:  # PINGREQ
                 conn.sendall(b"\xd0\x00")
@@ -114,6 +149,7 @@ def serve(host: str, port: int) -> tuple[socket.socket, dict, threading.Lock]:
         "payloads": [],
         "topics": set(),
         "qos_seen": set(),
+        "redelivered": 0,
         "other": set(),
         "errors": [],
         "first_ts": None,
@@ -148,6 +184,7 @@ def snapshot(stats: dict) -> dict:
         ),
         "topics": sorted(stats["topics"]),
         "qos_seen": sorted(stats["qos_seen"]),
+        "redelivered": stats["redelivered"],
         "span_s": round((stats["last_ts"] or 0) - (stats["first_ts"] or 0), 4),
         "errors": stats["errors"][:5],
     }
