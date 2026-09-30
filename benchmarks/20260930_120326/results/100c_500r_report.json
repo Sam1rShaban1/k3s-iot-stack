@@ -1,0 +1,584 @@
+{
+  "run_id": "run_20260930_120326",
+  "scenario": "100c_500r",
+  "timestamp": "2026-09-30T12:03:26Z",
+  "configuration": {
+    "num_clients": 100,
+    "total_rate_msg_s": 500,
+    "per_device_rate_msg_s": 5.0,
+    "test_duration_s": 30,
+    "nodes": "raspberrypi,pi7,pi2,pi3,pi4",
+    "node_count": 5
+  },
+  "results": {
+    "total_messages": 14974,
+    "unique_devices": 100,
+    "expected_messages": 14935,
+    "duration_s": 29.87,
+    "throughput_msg_s": 501.29,
+    "efficiency_pct": 100.26,
+    "drop_rate_pct": 0.0,
+    "latency": {
+      "samples": 14974,
+      "avg_ms": 139.778,
+      "min_ms": 8.0,
+      "max_ms": 1095.0,
+      "median_ms": 68.0,
+      "p50_ms": 68.0,
+      "p75_ms": 156.75,
+      "p90_ms": 362.0,
+      "p95_ms": 522.35,
+      "p99_ms": 920.27,
+      "p999_ms": 1080.027,
+      "stddev_ms": 178.321
+    },
+    "latency_metric": "iot_sensor_latency_ms",
+    "latency_definition": "end-to-end: sensor ts -> VictoriaMetrics write acknowledged",
+    "latency_distribution": [
+      {
+        "bucket": "0-10ms",
+        "min_ms": 0,
+        "max_ms": 10,
+        "count": 1,
+        "percentage": 0.0067
+      },
+      {
+        "bucket": "10-50ms",
+        "min_ms": 10,
+        "max_ms": 50,
+        "count": 5269,
+        "percentage": 35.1877
+      },
+      {
+        "bucket": "50-100ms",
+        "min_ms": 50,
+        "max_ms": 100,
+        "count": 4145,
+        "percentage": 27.6813
+      },
+      {
+        "bucket": "100-200ms",
+        "min_ms": 100,
+        "max_ms": 200,
+        "count": 2784,
+        "percentage": 18.5922
+      },
+      {
+        "bucket": "200-500ms",
+        "min_ms": 200,
+        "max_ms": 500,
+        "count": 1929,
+        "percentage": 12.8823
+      },
+      {
+        "bucket": "500ms-1s",
+        "min_ms": 500,
+        "max_ms": 1000,
+        "count": 761,
+        "percentage": 5.0821
+      },
+      {
+        "bucket": "1-2s",
+        "min_ms": 1000,
+        "max_ms": 2000,
+        "count": 85,
+        "percentage": 0.5677
+      },
+      {
+        "bucket": "2-5s",
+        "min_ms": 2000,
+        "max_ms": 5000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "5-10s",
+        "min_ms": 5000,
+        "max_ms": 10000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "10-30s",
+        "min_ms": 10000,
+        "max_ms": 30000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "30-60s",
+        "min_ms": 30000,
+        "max_ms": 60000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "1-2min",
+        "min_ms": 60000,
+        "max_ms": 120000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "2-5min",
+        "min_ms": 120000,
+        "max_ms": 300000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "5-10min",
+        "min_ms": 300000,
+        "max_ms": 600000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "10min-1h",
+        "min_ms": 600000,
+        "max_ms": 3600000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "1h+",
+        "min_ms": 3600000,
+        "max_ms": null,
+        "count": 0,
+        "percentage": 0.0
+      }
+    ],
+    "inter_arrival": {
+      "samples": 14973,
+      "avg_ms": 1.995,
+      "min_ms": 0.0,
+      "max_ms": 882.0,
+      "median_ms": 0.0,
+      "p50_ms": 0.0,
+      "p75_ms": 0.0,
+      "p90_ms": 3.0,
+      "p95_ms": 9.0,
+      "p99_ms": 39.0,
+      "p999_ms": 127.0,
+      "stddev_ms": 14.912
+    },
+    "inter_arrival_note": "time between consecutive writes at the consumer; NOT end-to-end latency",
+    "devices": [
+      {
+        "device_id": "sensor_100c_500r_94_run_20260930_120326_490069_344852650",
+        "messages": 150,
+        "avg_ms": 157.053,
+        "p50_ms": 80.5,
+        "p99_ms": 946.44,
+        "max_ms": 1053.0
+      },
+      {
+        "device_id": "sensor_100c_500r_37_run_20260930_120326_490012_319929164",
+        "messages": 150,
+        "avg_ms": 157.067,
+        "p50_ms": 87.0,
+        "p99_ms": 942.93,
+        "max_ms": 1050.0
+      },
+      {
+        "device_id": "sensor_100c_500r_92_run_20260930_120326_490067_343823939",
+        "messages": 150,
+        "avg_ms": 158.227,
+        "p50_ms": 83.5,
+        "p99_ms": 941.2,
+        "max_ms": 1060.0
+      },
+      {
+        "device_id": "sensor_100c_500r_24_run_20260930_120326_489999_314349024",
+        "messages": 150,
+        "avg_ms": 159.193,
+        "p50_ms": 84.0,
+        "p99_ms": 939.71,
+        "max_ms": 1058.0
+      },
+      {
+        "device_id": "sensor_100c_500r_29_run_20260930_120326_490004_316469486",
+        "messages": 150,
+        "avg_ms": 158.367,
+        "p50_ms": 80.5,
+        "p99_ms": 938.71,
+        "max_ms": 1057.0
+      },
+      {
+        "device_id": "sensor_100c_500r_84_run_20260930_120326_490059_339271183",
+        "messages": 150,
+        "avg_ms": 159.06,
+        "p50_ms": 83.0,
+        "p99_ms": 934.85,
+        "max_ms": 1060.0
+      },
+      {
+        "device_id": "sensor_100c_500r_57_run_20260930_120326_490032_328054012",
+        "messages": 150,
+        "avg_ms": 157.98,
+        "p50_ms": 87.0,
+        "p99_ms": 934.71,
+        "max_ms": 1053.0
+      },
+      {
+        "device_id": "sensor_100c_500r_85_run_20260930_120326_490060_339807386",
+        "messages": 150,
+        "avg_ms": 156.467,
+        "p50_ms": 82.5,
+        "p99_ms": 932.58,
+        "max_ms": 1046.0
+      },
+      {
+        "device_id": "sensor_100c_500r_9_run_20260930_120326_489984_307342190",
+        "messages": 150,
+        "avg_ms": 158.787,
+        "p50_ms": 79.5,
+        "p99_ms": 928.96,
+        "max_ms": 1061.0
+      },
+      {
+        "device_id": "sensor_100c_500r_34_run_20260930_120326_490009_318463402",
+        "messages": 150,
+        "avg_ms": 155.493,
+        "p50_ms": 82.0,
+        "p99_ms": 928.71,
+        "max_ms": 1047.0
+      },
+      {
+        "device_id": "sensor_100c_500r_23_run_20260930_120326_489998_313721414",
+        "messages": 150,
+        "avg_ms": 157.807,
+        "p50_ms": 84.0,
+        "p99_ms": 925.96,
+        "max_ms": 1059.0
+      },
+      {
+        "device_id": "sensor_100c_500r_20_run_20260930_120326_489995_312569134",
+        "messages": 150,
+        "avg_ms": 150.967,
+        "p50_ms": 80.5,
+        "p99_ms": 923.58,
+        "max_ms": 1042.0
+      },
+      {
+        "device_id": "sensor_100c_500r_63_run_20260930_120326_490038_331058969",
+        "messages": 149,
+        "avg_ms": 147.503,
+        "p50_ms": 74.0,
+        "p99_ms": 922.88,
+        "max_ms": 1034.0
+      },
+      {
+        "device_id": "sensor_100c_500r_52_run_20260930_120326_490027_325732476",
+        "messages": 150,
+        "avg_ms": 154.113,
+        "p50_ms": 81.5,
+        "p99_ms": 920.85,
+        "max_ms": 1046.0
+      },
+      {
+        "device_id": "sensor_100c_500r_18_run_20260930_120326_489993_311687748",
+        "messages": 150,
+        "avg_ms": 154.853,
+        "p50_ms": 81.5,
+        "p99_ms": 918.45,
+        "max_ms": 1051.0
+      },
+      {
+        "device_id": "sensor_100c_500r_74_run_20260930_120326_490049_334231512",
+        "messages": 150,
+        "avg_ms": 155.88,
+        "p50_ms": 79.5,
+        "p99_ms": 916.45,
+        "max_ms": 1049.0
+      },
+      {
+        "device_id": "sensor_100c_500r_42_run_20260930_120326_490017_322081675",
+        "messages": 149,
+        "avg_ms": 147.718,
+        "p50_ms": 74.0,
+        "p99_ms": 915.64,
+        "max_ms": 1086.0
+      },
+      {
+        "device_id": "sensor_100c_500r_67_run_20260930_120326_490042_332630419",
+        "messages": 150,
+        "avg_ms": 154.093,
+        "p50_ms": 81.0,
+        "p99_ms": 915.38,
+        "max_ms": 1063.0
+      },
+      {
+        "device_id": "sensor_100c_500r_75_run_20260930_120326_490050_334545442",
+        "messages": 150,
+        "avg_ms": 157.78,
+        "p50_ms": 82.5,
+        "p99_ms": 913.38,
+        "max_ms": 1061.0
+      },
+      {
+        "device_id": "sensor_100c_500r_30_run_20260930_120326_490005_316863514",
+        "messages": 150,
+        "avg_ms": 154.353,
+        "p50_ms": 80.0,
+        "p99_ms": 912.85,
+        "max_ms": 1095.0
+      },
+      {
+        "device_id": "sensor_100c_500r_83_run_20260930_120326_490058_338768239",
+        "messages": 150,
+        "avg_ms": 152.393,
+        "p50_ms": 78.5,
+        "p99_ms": 912.85,
+        "max_ms": 1039.0
+      },
+      {
+        "device_id": "sensor_100c_500r_53_run_20260930_120326_490028_326078621",
+        "messages": 149,
+        "avg_ms": 145.671,
+        "p50_ms": 69.0,
+        "p99_ms": 909.64,
+        "max_ms": 1042.0
+      },
+      {
+        "device_id": "sensor_100c_500r_2_run_20260930_120326_489977_302693966",
+        "messages": 150,
+        "avg_ms": 154.52,
+        "p50_ms": 78.5,
+        "p99_ms": 908.71,
+        "max_ms": 1062.0
+      },
+      {
+        "device_id": "sensor_100c_500r_77_run_20260930_120326_490052_335690628",
+        "messages": 150,
+        "avg_ms": 152.22,
+        "p50_ms": 79.5,
+        "p99_ms": 907.77,
+        "max_ms": 1064.0
+      },
+      {
+        "device_id": "sensor_100c_500r_68_run_20260930_120326_490043_332891872",
+        "messages": 150,
+        "avg_ms": 151.827,
+        "p50_ms": 80.0,
+        "p99_ms": 906.45,
+        "max_ms": 1044.0
+      },
+      {
+        "device_id": "sensor_100c_500r_13_run_20260930_120326_489988_309325738",
+        "messages": 150,
+        "avg_ms": 157.093,
+        "p50_ms": 83.0,
+        "p99_ms": 906.23,
+        "max_ms": 1051.0
+      },
+      {
+        "device_id": "sensor_100c_500r_61_run_20260930_120326_490036_330253163",
+        "messages": 150,
+        "avg_ms": 156.027,
+        "p50_ms": 81.0,
+        "p99_ms": 905.26,
+        "max_ms": 1061.0
+      },
+      {
+        "device_id": "sensor_100c_500r_39_run_20260930_120326_490014_320491294",
+        "messages": 149,
+        "avg_ms": 146.685,
+        "p50_ms": 75.0,
+        "p99_ms": 904.92,
+        "max_ms": 1028.0
+      },
+      {
+        "device_id": "sensor_100c_500r_55_run_20260930_120326_490030_327252544",
+        "messages": 149,
+        "avg_ms": 145.946,
+        "p50_ms": 72.0,
+        "p99_ms": 903.92,
+        "max_ms": 1079.0
+      },
+      {
+        "device_id": "sensor_100c_500r_71_run_20260930_120326_490046_333564539",
+        "messages": 150,
+        "avg_ms": 156.253,
+        "p50_ms": 84.0,
+        "p99_ms": 902.75,
+        "max_ms": 1058.0
+      },
+      {
+        "device_id": "sensor_100c_500r_48_run_20260930_120326_490023_324320737",
+        "messages": 149,
+        "avg_ms": 141.262,
+        "p50_ms": 65.0,
+        "p99_ms": 899.16,
+        "max_ms": 1032.0
+      },
+      {
+        "device_id": "sensor_100c_500r_46_run_20260930_120326_490021_323769982",
+        "messages": 149,
+        "avg_ms": 146.617,
+        "p50_ms": 73.0,
+        "p99_ms": 898.68,
+        "max_ms": 1081.0
+      },
+      {
+        "device_id": "sensor_100c_500r_40_run_20260930_120326_490015_321777265",
+        "messages": 150,
+        "avg_ms": 155.0,
+        "p50_ms": 82.5,
+        "p99_ms": 898.24,
+        "max_ms": 1053.0
+      },
+      {
+        "device_id": "sensor_100c_500r_45_run_20260930_120326_490020_323521977",
+        "messages": 150,
+        "avg_ms": 158.747,
+        "p50_ms": 86.5,
+        "p99_ms": 897.75,
+        "max_ms": 1053.0
+      },
+      {
+        "device_id": "sensor_100c_500r_3_run_20260930_120326_489978_303500231",
+        "messages": 150,
+        "avg_ms": 157.32,
+        "p50_ms": 81.0,
+        "p99_ms": 896.38,
+        "max_ms": 1044.0
+      },
+      {
+        "device_id": "sensor_100c_500r_89_run_20260930_120326_490064_342272413",
+        "messages": 149,
+        "avg_ms": 146.463,
+        "p50_ms": 75.0,
+        "p99_ms": 894.4,
+        "max_ms": 1045.0
+      },
+      {
+        "device_id": "sensor_100c_500r_99_run_20260930_120326_490074_346970432",
+        "messages": 149,
+        "avg_ms": 140.617,
+        "p50_ms": 65.0,
+        "p99_ms": 893.92,
+        "max_ms": 1069.0
+      },
+      {
+        "device_id": "sensor_100c_500r_91_run_20260930_120326_490066_343090277",
+        "messages": 150,
+        "avg_ms": 154.76,
+        "p50_ms": 83.0,
+        "p99_ms": 892.24,
+        "max_ms": 1047.0
+      },
+      {
+        "device_id": "sensor_100c_500r_95_run_20260930_120326_490070_345208584",
+        "messages": 150,
+        "avg_ms": 152.12,
+        "p50_ms": 78.5,
+        "p99_ms": 890.38,
+        "max_ms": 1043.0
+      },
+      {
+        "device_id": "sensor_100c_500r_49_run_20260930_120326_490024_324772507",
+        "messages": 150,
+        "avg_ms": 149.8,
+        "p50_ms": 74.0,
+        "p99_ms": 890.38,
+        "max_ms": 1038.0
+      },
+      {
+        "device_id": "sensor_100c_500r_59_run_20260930_120326_490034_329081706",
+        "messages": 149,
+        "avg_ms": 142.497,
+        "p50_ms": 66.0,
+        "p99_ms": 887.4,
+        "max_ms": 1076.0
+      },
+      {
+        "device_id": "sensor_100c_500r_65_run_20260930_120326_490040_331594179",
+        "messages": 149,
+        "avg_ms": 147.295,
+        "p50_ms": 73.0,
+        "p99_ms": 885.96,
+        "max_ms": 1029.0
+      },
+      {
+        "device_id": "sensor_100c_500r_81_run_20260930_120326_490056_337943564",
+        "messages": 149,
+        "avg_ms": 146.792,
+        "p50_ms": 75.0,
+        "p99_ms": 884.96,
+        "max_ms": 1033.0
+      },
+      {
+        "device_id": "sensor_100c_500r_36_run_20260930_120326_490011_319400384",
+        "messages": 150,
+        "avg_ms": 158.967,
+        "p50_ms": 85.5,
+        "p99_ms": 883.14,
+        "max_ms": 1057.0
+      },
+      {
+        "device_id": "sensor_100c_500r_31_run_20260930_120326_490006_317127167",
+        "messages": 150,
+        "avg_ms": 118.947,
+        "p50_ms": 47.0,
+        "p99_ms": 881.56,
+        "max_ms": 1087.0
+      },
+      {
+        "device_id": "sensor_100c_500r_62_run_20260930_120326_490037_330580967",
+        "messages": 150,
+        "avg_ms": 121.68,
+        "p50_ms": 47.0,
+        "p99_ms": 881.56,
+        "max_ms": 1087.0
+      },
+      {
+        "device_id": "sensor_100c_500r_69_run_20260930_120326_490044_333033719",
+        "messages": 149,
+        "avg_ms": 133.94,
+        "p50_ms": 59.0,
+        "p99_ms": 878.68,
+        "max_ms": 1023.0
+      },
+      {
+        "device_id": "sensor_100c_500r_44_run_20260930_120326_490019_322811351",
+        "messages": 150,
+        "avg_ms": 157.053,
+        "p50_ms": 86.0,
+        "p99_ms": 878.63,
+        "max_ms": 1053.0
+      },
+      {
+        "device_id": "sensor_100c_500r_66_run_20260930_120326_490041_331949072",
+        "messages": 149,
+        "avg_ms": 138.483,
+        "p50_ms": 61.0,
+        "p99_ms": 876.92,
+        "max_ms": 1079.0
+      },
+      {
+        "device_id": "sensor_100c_500r_38_run_20260930_120326_490013_320066816",
+        "messages": 149,
+        "avg_ms": 145.483,
+        "p50_ms": 73.0,
+        "p99_ms": 872.76,
+        "max_ms": 1091.0
+      }
+    ],
+    "nats_purged": true,
+    "nats_messages_before": 57410,
+    "nats_messages_after": 0,
+    "nats_purge_detail": "purged IOT_DATA in-cluster via nats-consumer-865676bf8b-dv7zq/nats-consumer",
+    "nats_retained": 14974,
+    "nats_unconsumed": 0,
+    "nats_num_pending": 0,
+    "nats_num_ack_pending": 0,
+    "nats_num_redelivered": 0,
+    "nats_bytes_stored": 2910161,
+    "nats_retention": "limits",
+    "nats_max_msgs": -1,
+    "nats_max_age": 3600.0,
+    "nats_max_bytes": 536870912,
+    "nats_drained": true
+  }
+}

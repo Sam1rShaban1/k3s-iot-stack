@@ -1,0 +1,264 @@
+{
+  "run_id": "run_20260930_120326",
+  "scenario": "10c_500r",
+  "timestamp": "2026-09-30T12:03:26Z",
+  "configuration": {
+    "num_clients": 10,
+    "total_rate_msg_s": 500,
+    "per_device_rate_msg_s": 50.0,
+    "test_duration_s": 30,
+    "nodes": "raspberrypi,pi7,pi2,pi3,pi4",
+    "node_count": 5
+  },
+  "results": {
+    "total_messages": 14785,
+    "unique_devices": 10,
+    "expected_messages": 14960,
+    "duration_s": 29.92,
+    "throughput_msg_s": 494.13,
+    "efficiency_pct": 98.83,
+    "drop_rate_pct": 1.17,
+    "latency": {
+      "samples": 14785,
+      "avg_ms": 70.111,
+      "min_ms": 9.0,
+      "max_ms": 818.0,
+      "median_ms": 40.0,
+      "p50_ms": 40.0,
+      "p75_ms": 80.0,
+      "p90_ms": 147.0,
+      "p95_ms": 206.0,
+      "p99_ms": 548.0,
+      "p999_ms": 778.216,
+      "stddev_ms": 88.139
+    },
+    "latency_metric": "iot_sensor_latency_ms",
+    "latency_definition": "end-to-end: sensor ts -> VictoriaMetrics write acknowledged",
+    "latency_distribution": [
+      {
+        "bucket": "0-10ms",
+        "min_ms": 0,
+        "max_ms": 10,
+        "count": 1,
+        "percentage": 0.0068
+      },
+      {
+        "bucket": "10-50ms",
+        "min_ms": 10,
+        "max_ms": 50,
+        "count": 8665,
+        "percentage": 58.6067
+      },
+      {
+        "bucket": "50-100ms",
+        "min_ms": 50,
+        "max_ms": 100,
+        "count": 3307,
+        "percentage": 22.3673
+      },
+      {
+        "bucket": "100-200ms",
+        "min_ms": 100,
+        "max_ms": 200,
+        "count": 2034,
+        "percentage": 13.7572
+      },
+      {
+        "bucket": "200-500ms",
+        "min_ms": 200,
+        "max_ms": 500,
+        "count": 605,
+        "percentage": 4.092
+      },
+      {
+        "bucket": "500ms-1s",
+        "min_ms": 500,
+        "max_ms": 1000,
+        "count": 173,
+        "percentage": 1.1701
+      },
+      {
+        "bucket": "1-2s",
+        "min_ms": 1000,
+        "max_ms": 2000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "2-5s",
+        "min_ms": 2000,
+        "max_ms": 5000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "5-10s",
+        "min_ms": 5000,
+        "max_ms": 10000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "10-30s",
+        "min_ms": 10000,
+        "max_ms": 30000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "30-60s",
+        "min_ms": 30000,
+        "max_ms": 60000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "1-2min",
+        "min_ms": 60000,
+        "max_ms": 120000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "2-5min",
+        "min_ms": 120000,
+        "max_ms": 300000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "5-10min",
+        "min_ms": 300000,
+        "max_ms": 600000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "10min-1h",
+        "min_ms": 600000,
+        "max_ms": 3600000,
+        "count": 0,
+        "percentage": 0.0
+      },
+      {
+        "bucket": "1h+",
+        "min_ms": 3600000,
+        "max_ms": null,
+        "count": 0,
+        "percentage": 0.0
+      }
+    ],
+    "inter_arrival": {
+      "samples": 14784,
+      "avg_ms": 2.024,
+      "min_ms": 0.0,
+      "max_ms": 438.0,
+      "median_ms": 0.0,
+      "p50_ms": 0.0,
+      "p75_ms": 1.0,
+      "p90_ms": 6.0,
+      "p95_ms": 10.0,
+      "p99_ms": 28.0,
+      "p999_ms": 93.217,
+      "stddev_ms": 7.924
+    },
+    "inter_arrival_note": "time between consecutive writes at the consumer; NOT end-to-end latency",
+    "devices": [
+      {
+        "device_id": "sensor_10c_500r_8_run_20260930_120326_481956_184939301",
+        "messages": 1480,
+        "avg_ms": 70.838,
+        "p50_ms": 42.0,
+        "p99_ms": 548.42,
+        "max_ms": 798.0
+      },
+      {
+        "device_id": "sensor_10c_500r_5_run_20260930_120326_481953_184020548",
+        "messages": 1477,
+        "avg_ms": 69.96,
+        "p50_ms": 40.0,
+        "p99_ms": 543.0,
+        "max_ms": 805.0
+      },
+      {
+        "device_id": "sensor_10c_500r_9_run_20260930_120326_481957_185623789",
+        "messages": 1478,
+        "avg_ms": 70.433,
+        "p50_ms": 40.0,
+        "p99_ms": 541.6,
+        "max_ms": 798.0
+      },
+      {
+        "device_id": "sensor_10c_500r_7_run_20260930_120326_481955_184757022",
+        "messages": 1477,
+        "avg_ms": 71.544,
+        "p50_ms": 42.0,
+        "p99_ms": 541.56,
+        "max_ms": 787.0
+      },
+      {
+        "device_id": "sensor_10c_500r_4_run_20260930_120326_481952_183571266",
+        "messages": 1479,
+        "avg_ms": 71.038,
+        "p50_ms": 42.0,
+        "p99_ms": 541.4,
+        "max_ms": 799.0
+      },
+      {
+        "device_id": "sensor_10c_500r_0_run_20260930_120326_481948_182130599",
+        "messages": 1478,
+        "avg_ms": 68.746,
+        "p50_ms": 39.0,
+        "p99_ms": 541.37,
+        "max_ms": 798.0
+      },
+      {
+        "device_id": "sensor_10c_500r_2_run_20260930_120326_481950_182923793",
+        "messages": 1480,
+        "avg_ms": 69.215,
+        "p50_ms": 39.0,
+        "p99_ms": 540.41,
+        "max_ms": 818.0
+      },
+      {
+        "device_id": "sensor_10c_500r_3_run_20260930_120326_481951_183374921",
+        "messages": 1478,
+        "avg_ms": 71.338,
+        "p50_ms": 42.0,
+        "p99_ms": 539.53,
+        "max_ms": 818.0
+      },
+      {
+        "device_id": "sensor_10c_500r_1_run_20260930_120326_481949_182642614",
+        "messages": 1477,
+        "avg_ms": 68.139,
+        "p50_ms": 38.0,
+        "p99_ms": 539.16,
+        "max_ms": 777.0
+      },
+      {
+        "device_id": "sensor_10c_500r_6_run_20260930_120326_481954_184412362",
+        "messages": 1481,
+        "avg_ms": 69.86,
+        "p50_ms": 40.0,
+        "p99_ms": 538.6,
+        "max_ms": 787.0
+      }
+    ],
+    "nats_purged": true,
+    "nats_messages_before": 59334,
+    "nats_messages_after": 0,
+    "nats_purge_detail": "purged IOT_DATA in-cluster via nats-consumer-865676bf8b-dv7zq/nats-consumer",
+    "nats_retained": 14785,
+    "nats_unconsumed": 0,
+    "nats_num_pending": 0,
+    "nats_num_ack_pending": 0,
+    "nats_num_redelivered": 0,
+    "nats_bytes_stored": 2845439,
+    "nats_retention": "limits",
+    "nats_max_msgs": -1,
+    "nats_max_age": 3600.0,
+    "nats_max_bytes": 536870912,
+    "nats_drained": true
+  }
+}

@@ -866,3 +866,94 @@ when the advertised address does. The rule allows `10.0.0.0/16` and
 `192.168.1.0/24` on 443/6443, so it covers the API server whether it is reached
 at 10.0.0.1:6443 (the endpoint other nodes see) or 192.168.1.50:6443 (the LAN
 address). `apiserver-egress` still passes and the pipeline is unaffected.
+
+---
+
+## D19 — full benchmark on the corrected pipeline, at both QoS levels
+
+Run 2026-09-30, after every fix in D4–D18. This is the first result set in the
+project produced by instrumentation that has been checked against the failure
+modes found by auditing it.
+
+**Conditions, all recorded in the summaries and all verified true:**
+
+- `nats_purged_all_scenarios: true` — the JetStream stream was emptied before
+  every scenario.
+- `nats_drained_all_scenarios: true` — the consumer had acknowledged everything
+  before each scenario was measured, so no scenario inherited another's backlog.
+- 5 nodes, `v1.35.4+k3s1`, single version.
+- 30 s per scenario, 15 s settle, 15 s cooldown.
+- Latency metric `iot_sensor_latency_ms`, which after D11 is genuinely
+  sensor-timestamp to VictoriaMetrics acknowledging the write.
+
+### QoS 0 — `benchmarks/20260930_115549`
+
+| scenario | stored | devices | msg/s | efficiency | p50 | p95 | p99 |
+|---|---|---|---|---|---|---|---|
+| 10c_500r | 14,824 | 10 | 493.9 | 98.79% | 39 ms | 277 ms | 725 ms |
+| 10c_1000r | 29,487 | 10 | 988.5 | 98.85% | 167 ms | 962 ms | 1,743 ms |
+| 10c_2000r | 58,382 | 10 | 1,929.9 | 96.49% | 219 ms | 1,269 ms | 1,940 ms |
+| 100c_500r | 14,958 | 100 | 490.5 | 98.09% | 55 ms | 450 ms | 914 ms |
+| 100c_1000r | 29,849 | 100 | 960.3 | 96.03% | 202 ms | 1,707 ms | 2,304 ms |
+| 100c_2000r | 59,334 | 100 | 1,936.2 | 96.81% | 565 ms | 8,931 ms | 9,531 ms |
+
+Efficiency 96.03–98.85%, mean 97.51%. For comparison, the same harness reported
+**6.01%** before the D9 export-scoping fix, and the pre-harness `run_test.sh`
+corpus is not comparable at all (D4).
+
+### QoS 1 — `benchmarks/20260930_120326`
+
+| scenario | stored | devices | msg/s | efficiency | p99 |
+|---|---|---|---|---|---|
+| 10c_500r | 14,785 | 10 | 494.1 | 98.83% | 548 ms |
+| 10c_1000r | 29,301 | 10 | 953.0 | 95.30% | 1,610 ms |
+| 10c_2000r | 57,410 | 10 | 1,898.4 | 94.92% | 2,209 ms |
+| 100c_500r | 14,974 | 100 | 501.3 | 100.26% | 920 ms |
+| 100c_1000r | 29,848 | 100 | 960.2 | 96.02% | 3,896 ms |
+| 100c_2000r | 57,701 | 100 | 1,924.5 | 96.22% | 4,132 ms |
+
+### QoS 1 costs 0.59 percentage points of efficiency, on average
+
+| scenario | QoS 0 | QoS 1 | delta |
+|---|---|---|---|
+| 10c_500r | 98.79% | 98.83% | +0.04 |
+| 10c_1000r | 98.85% | 95.30% | −3.55 |
+| 10c_2000r | 96.49% | 94.92% | −1.57 |
+| 100c_500r | 98.09% | 100.26% | +2.17 |
+| 100c_1000r | 96.03% | 96.02% | −0.01 |
+| 100c_2000r | 96.81% | 96.22% | −0.59 |
+| **mean** | **97.51%** | **96.92%** | **−0.59** |
+
+This is the replacement evidence for D15. With a correct load generator, an
+acknowledged publish costs well under one percent of throughput at every rate
+tested, and the spread (−3.55 to +2.17) is the same order as run-to-run
+variation. **Paper §V-C's "~50 msg/s per connection serialization ceiling" is
+contradicted by measurement** and should be withdrawn rather than re-qualified:
+the constraint was Paho C's default in-flight window of 10 in the load
+generator, and it disappears once the window is widened.
+
+The reason QoS 1 is nearly free is that the acknowledgement round trip is not
+the bottleneck — EMQX and Benthos are. At 2,000 msg/s across 100 connections
+there is enough queueing elsewhere to absorb one extra round trip.
+
+### One anomaly worth reporting rather than smoothing
+
+`100c_2000r` at QoS 0 has p95 8,931 ms and p99 9,531 ms, roughly four times the
+QoS 1 figure for the same scenario (p99 4,132 ms) and three to five times every
+other cell. Efficiency and throughput are unremarkable (96.81%, 1,936 msg/s), so
+this is a latency-tail effect, not a throughput one.
+
+It is most likely the Benthos MQTT shared-subscription group rebalancing across 5
+replicas under the highest fan-in in the matrix, but that is a hypothesis, not a
+measured cause. It is recorded as-is rather than re-run until it looks
+reasonable, and it is the obvious first thing for the P2 fault-injection lab to
+explain.
+
+### Provenance
+
+Both `results/` directories are committed (14 files, 152 kB). The ~600
+historical summaries are **not**, and `.gitignore` explains why: they were
+produced by the instrumentation that D4, D9, D11 and D15 show to be wrong, and
+committing them unannotated would imply they are citable. The raw
+VictoriaMetrics exports for all runs remain local (~3.3 GB) and are
+regenerable.
