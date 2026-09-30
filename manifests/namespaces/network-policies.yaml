@@ -47,9 +47,12 @@
 # BUG 6 — no policy allowed egress to the Kubernetes API server.
 #   Not present as a duplicate but as a systematic omission. ArgoCD,
 #   Prometheus, metrics-server and node-exporter all need to reach
-#   10.43.0.1:6443 (the in-cluster kubernetes ClusterIP). Under an
-#   egress-restricted policy they would silently fail.
-#   FIX: explicit rule to kube-system:6443 in every namespace policy.
+#   the kubernetes Service. Under an egress-restricted policy they would
+#   silently fail. Two fixes were tried and both were wrong: allowing
+#   kube-system:6443 (no client uses that path) and allowing the service
+#   CIDR on 443 (Calico evaluates policy after kube-proxy's DNAT, so it
+#   sees the endpoint address, not the ClusterIP). The working rule names
+#   the node networks on 443/6443 -- see the per-policy comment.
 #
 # BUG 7 — the paper's "default-deny ingress" did not exist.
 #   Paper §III-I states "All namespaces run with default-deny ingress."
@@ -98,11 +101,40 @@ spec:
       ports:
         - protocol: TCP
           port: 8428
+    # Kubernetes API server.
+    #
+    # Getting this right took two wrong attempts, both of which looked
+    # correct, and both of which left every in-cluster API client broken:
+    #
+    #   1. namespaceSelector kube-system : 6443. Wrong twice over. The
+    #      kubernetes Service listens on 443 and forwards to 6443 on the node,
+    #      so no client ever connects to 6443; and the Service has no backing
+    #      pods, so there is nothing in kube-system to select.
+    #
+    #   2. ipBlock on the service CIDR, 10.43.0.0/16 : 443. Still wrong, and
+    #      this is the non-obvious one. Calico applies policy in the FORWARD
+    #      chain, which runs *after* kube-proxy's DNAT in PREROUTING. By the
+    #      time the policy is evaluated the destination is no longer the
+    #      ClusterIP 10.43.0.1:443 but the endpoint 10.0.0.1:6443. Verified on
+    #      this cluster: a pod in the default namespace reached 10.43.0.1:443,
+    #      and an identical pod in the monitoring namespace was refused, with
+    #      the 10.43.0.0/16 rule in place. Adding 10.0.0.0/16 made the same
+    #      probe succeed.
+    #
+    # So the rule has to name the network the API server is actually reached on
+    # -- the node networks -- and not the ClusterIP. Both private ranges are
+    # listed, with 6443 and 443, which covers the endpoint, the ClusterIP and
+    # the control-plane LAN address. The tradeoff is that this permits egress to
+    # those two ports anywhere in those ranges; acceptable on an air-gapped lab,
+    # and tighter rules would need a CNI-specific rewrite.
     - to:
-        - namespaceSelector:
-            matchLabels:
-              name: kube-system
+        - ipBlock:
+            cidr: 10.0.0.0/16
+        - ipBlock:
+            cidr: 192.168.1.0/24
       ports:
+        - protocol: TCP
+          port: 443
         - protocol: TCP
           port: 6443
     # BUG 1 fix: CoreDNS may live in any namespace depending on the distro
@@ -164,11 +196,40 @@ spec:
         - protocol: TCP
           port: 1883
   egress:
+    # Kubernetes API server.
+    #
+    # Getting this right took two wrong attempts, both of which looked
+    # correct, and both of which left every in-cluster API client broken:
+    #
+    #   1. namespaceSelector kube-system : 6443. Wrong twice over. The
+    #      kubernetes Service listens on 443 and forwards to 6443 on the node,
+    #      so no client ever connects to 6443; and the Service has no backing
+    #      pods, so there is nothing in kube-system to select.
+    #
+    #   2. ipBlock on the service CIDR, 10.43.0.0/16 : 443. Still wrong, and
+    #      this is the non-obvious one. Calico applies policy in the FORWARD
+    #      chain, which runs *after* kube-proxy's DNAT in PREROUTING. By the
+    #      time the policy is evaluated the destination is no longer the
+    #      ClusterIP 10.43.0.1:443 but the endpoint 10.0.0.1:6443. Verified on
+    #      this cluster: a pod in the default namespace reached 10.43.0.1:443,
+    #      and an identical pod in the monitoring namespace was refused, with
+    #      the 10.43.0.0/16 rule in place. Adding 10.0.0.0/16 made the same
+    #      probe succeed.
+    #
+    # So the rule has to name the network the API server is actually reached on
+    # -- the node networks -- and not the ClusterIP. Both private ranges are
+    # listed, with 6443 and 443, which covers the endpoint, the ClusterIP and
+    # the control-plane LAN address. The tradeoff is that this permits egress to
+    # those two ports anywhere in those ranges; acceptable on an air-gapped lab,
+    # and tighter rules would need a CNI-specific rewrite.
     - to:
-        - namespaceSelector:
-            matchLabels:
-              name: kube-system
+        - ipBlock:
+            cidr: 10.0.0.0/16
+        - ipBlock:
+            cidr: 192.168.1.0/24
       ports:
+        - protocol: TCP
+          port: 443
         - protocol: TCP
           port: 6443
     - to:
@@ -223,11 +284,40 @@ spec:
       ports:
         - protocol: TCP
           port: 4222
+    # Kubernetes API server.
+    #
+    # Getting this right took two wrong attempts, both of which looked
+    # correct, and both of which left every in-cluster API client broken:
+    #
+    #   1. namespaceSelector kube-system : 6443. Wrong twice over. The
+    #      kubernetes Service listens on 443 and forwards to 6443 on the node,
+    #      so no client ever connects to 6443; and the Service has no backing
+    #      pods, so there is nothing in kube-system to select.
+    #
+    #   2. ipBlock on the service CIDR, 10.43.0.0/16 : 443. Still wrong, and
+    #      this is the non-obvious one. Calico applies policy in the FORWARD
+    #      chain, which runs *after* kube-proxy's DNAT in PREROUTING. By the
+    #      time the policy is evaluated the destination is no longer the
+    #      ClusterIP 10.43.0.1:443 but the endpoint 10.0.0.1:6443. Verified on
+    #      this cluster: a pod in the default namespace reached 10.43.0.1:443,
+    #      and an identical pod in the monitoring namespace was refused, with
+    #      the 10.43.0.0/16 rule in place. Adding 10.0.0.0/16 made the same
+    #      probe succeed.
+    #
+    # So the rule has to name the network the API server is actually reached on
+    # -- the node networks -- and not the ClusterIP. Both private ranges are
+    # listed, with 6443 and 443, which covers the endpoint, the ClusterIP and
+    # the control-plane LAN address. The tradeoff is that this permits egress to
+    # those two ports anywhere in those ranges; acceptable on an air-gapped lab,
+    # and tighter rules would need a CNI-specific rewrite.
     - to:
-        - namespaceSelector:
-            matchLabels:
-              name: kube-system
+        - ipBlock:
+            cidr: 10.0.0.0/16
+        - ipBlock:
+            cidr: 192.168.1.0/24
       ports:
+        - protocol: TCP
+          port: 443
         - protocol: TCP
           port: 6443
     - to:
@@ -271,11 +361,40 @@ spec:
         - protocol: TCP
           port: 6222
   egress:
+    # Kubernetes API server.
+    #
+    # Getting this right took two wrong attempts, both of which looked
+    # correct, and both of which left every in-cluster API client broken:
+    #
+    #   1. namespaceSelector kube-system : 6443. Wrong twice over. The
+    #      kubernetes Service listens on 443 and forwards to 6443 on the node,
+    #      so no client ever connects to 6443; and the Service has no backing
+    #      pods, so there is nothing in kube-system to select.
+    #
+    #   2. ipBlock on the service CIDR, 10.43.0.0/16 : 443. Still wrong, and
+    #      this is the non-obvious one. Calico applies policy in the FORWARD
+    #      chain, which runs *after* kube-proxy's DNAT in PREROUTING. By the
+    #      time the policy is evaluated the destination is no longer the
+    #      ClusterIP 10.43.0.1:443 but the endpoint 10.0.0.1:6443. Verified on
+    #      this cluster: a pod in the default namespace reached 10.43.0.1:443,
+    #      and an identical pod in the monitoring namespace was refused, with
+    #      the 10.43.0.0/16 rule in place. Adding 10.0.0.0/16 made the same
+    #      probe succeed.
+    #
+    # So the rule has to name the network the API server is actually reached on
+    # -- the node networks -- and not the ClusterIP. Both private ranges are
+    # listed, with 6443 and 443, which covers the endpoint, the ClusterIP and
+    # the control-plane LAN address. The tradeoff is that this permits egress to
+    # those two ports anywhere in those ranges; acceptable on an air-gapped lab,
+    # and tighter rules would need a CNI-specific rewrite.
     - to:
-        - namespaceSelector:
-            matchLabels:
-              name: kube-system
+        - ipBlock:
+            cidr: 10.0.0.0/16
+        - ipBlock:
+            cidr: 192.168.1.0/24
       ports:
+        - protocol: TCP
+          port: 443
         - protocol: TCP
           port: 6443
     - to:
@@ -311,11 +430,40 @@ spec:
         - protocol: TCP
           port: 8428
   egress:
+    # Kubernetes API server.
+    #
+    # Getting this right took two wrong attempts, both of which looked
+    # correct, and both of which left every in-cluster API client broken:
+    #
+    #   1. namespaceSelector kube-system : 6443. Wrong twice over. The
+    #      kubernetes Service listens on 443 and forwards to 6443 on the node,
+    #      so no client ever connects to 6443; and the Service has no backing
+    #      pods, so there is nothing in kube-system to select.
+    #
+    #   2. ipBlock on the service CIDR, 10.43.0.0/16 : 443. Still wrong, and
+    #      this is the non-obvious one. Calico applies policy in the FORWARD
+    #      chain, which runs *after* kube-proxy's DNAT in PREROUTING. By the
+    #      time the policy is evaluated the destination is no longer the
+    #      ClusterIP 10.43.0.1:443 but the endpoint 10.0.0.1:6443. Verified on
+    #      this cluster: a pod in the default namespace reached 10.43.0.1:443,
+    #      and an identical pod in the monitoring namespace was refused, with
+    #      the 10.43.0.0/16 rule in place. Adding 10.0.0.0/16 made the same
+    #      probe succeed.
+    #
+    # So the rule has to name the network the API server is actually reached on
+    # -- the node networks -- and not the ClusterIP. Both private ranges are
+    # listed, with 6443 and 443, which covers the endpoint, the ClusterIP and
+    # the control-plane LAN address. The tradeoff is that this permits egress to
+    # those two ports anywhere in those ranges; acceptable on an air-gapped lab,
+    # and tighter rules would need a CNI-specific rewrite.
     - to:
-        - namespaceSelector:
-            matchLabels:
-              name: kube-system
+        - ipBlock:
+            cidr: 10.0.0.0/16
+        - ipBlock:
+            cidr: 192.168.1.0/24
       ports:
+        - protocol: TCP
+          port: 443
         - protocol: TCP
           port: 6443
     - to:
@@ -374,11 +522,40 @@ spec:
       ports:
         - protocol: TCP
           port: 3100
+    # Kubernetes API server.
+    #
+    # Getting this right took two wrong attempts, both of which looked
+    # correct, and both of which left every in-cluster API client broken:
+    #
+    #   1. namespaceSelector kube-system : 6443. Wrong twice over. The
+    #      kubernetes Service listens on 443 and forwards to 6443 on the node,
+    #      so no client ever connects to 6443; and the Service has no backing
+    #      pods, so there is nothing in kube-system to select.
+    #
+    #   2. ipBlock on the service CIDR, 10.43.0.0/16 : 443. Still wrong, and
+    #      this is the non-obvious one. Calico applies policy in the FORWARD
+    #      chain, which runs *after* kube-proxy's DNAT in PREROUTING. By the
+    #      time the policy is evaluated the destination is no longer the
+    #      ClusterIP 10.43.0.1:443 but the endpoint 10.0.0.1:6443. Verified on
+    #      this cluster: a pod in the default namespace reached 10.43.0.1:443,
+    #      and an identical pod in the monitoring namespace was refused, with
+    #      the 10.43.0.0/16 rule in place. Adding 10.0.0.0/16 made the same
+    #      probe succeed.
+    #
+    # So the rule has to name the network the API server is actually reached on
+    # -- the node networks -- and not the ClusterIP. Both private ranges are
+    # listed, with 6443 and 443, which covers the endpoint, the ClusterIP and
+    # the control-plane LAN address. The tradeoff is that this permits egress to
+    # those two ports anywhere in those ranges; acceptable on an air-gapped lab,
+    # and tighter rules would need a CNI-specific rewrite.
     - to:
-        - namespaceSelector:
-            matchLabels:
-              name: kube-system
+        - ipBlock:
+            cidr: 10.0.0.0/16
+        - ipBlock:
+            cidr: 192.168.1.0/24
       ports:
+        - protocol: TCP
+          port: 443
         - protocol: TCP
           port: 6443
     - to:

@@ -15,6 +15,7 @@ distinguishable from an unreachable cluster.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field
 from typing import Optional
@@ -109,6 +110,53 @@ def _clean_stderr(stderr: str) -> str:
     return lines[-1]
 
 
+def _diagnose_kubectl(err: str) -> str:
+    """Turn a kubectl failure into something actionable.
+
+    The vague version of this message cost real time. A kubeconfig that pointed
+    at a file which had been deleted reported only "the server could not find
+    the requested resource", which reads like a broken cluster rather than a
+    broken client config. The two are distinguished here.
+    """
+    text = (err or "").strip()
+    low = text.lower()
+
+    if "the server could not find the requested resource" in low:
+        probe = subprocess.run(
+            ["kubectl", "config", "view", "--minify", "-o",
+             "jsonpath={.clusters[0].cluster.server}"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        server = probe.stdout.strip()
+        detail = (
+            "kubectl reached no API group. That is a client-side problem, not a "
+            "down cluster"
+        )
+        if probe.returncode != 0 or not server:
+            detail += (
+                ": kubectl cannot read a usable context (KUBECONFIG="
+                f"{os.environ.get('KUBECONFIG', '<unset, using ~/.kube/config>')}"
+                "). Check that the file exists and contains a current-context."
+            )
+        else:
+            detail += (
+                f". Context points at {server}; if that is right, the API server "
+                "may be down or the token may have expired."
+            )
+        return detail
+
+    if "connection refused" in low or "connection timed out" in low or "no route to host" in low:
+        return (
+            f"cannot reach the API server ({text}). Check that the control-plane "
+            "node is up and reachable from this host."
+        )
+
+    if "unauthorized" in low or "forbidden" in low:
+        return f"authenticated but not authorised ({text}); the kubeconfig token may have expired."
+
+    return f"kubectl could not reach the API server: {text or 'unknown error'}"
+
+
 def check_cluster_reachable(result: PreflightResult) -> bool:
     """Returns True when the cluster answered, so callers can short-circuit."""
     code, out, err = _kubectl(["get", "nodes", "-o", "json", "--request-timeout=8s"])
@@ -117,12 +165,22 @@ def check_cluster_reachable(result: PreflightResult) -> bool:
             Check(
                 "cluster-reachable",
                 False,
-                f"kubectl could not reach the API server: {err or 'unknown error'}. "
-                "Component checks skipped -- they would all report the same cause.",
+                _diagnose_kubectl(err)
+                + " Component checks skipped -- they would all report the same cause.",
             )
         )
         return False
-    result.add(Check("cluster-reachable", True, "kubectl can reach the API server"))
+    context = subprocess.run(
+        ["kubectl", "config", "current-context"],
+        capture_output=True, text=True, timeout=20, check=False,
+    ).stdout.strip()
+    result.add(
+        Check(
+            "cluster-reachable",
+            True,
+            f"kubectl can reach the API server (context: {context or 'unknown'})",
+        )
+    )
 
     try:
         nodes = json.loads(out).get("items", [])
@@ -370,6 +428,164 @@ def check_jetstream_retention(result: PreflightResult) -> None:
         )
 
 
+def check_airgap_images(result: PreflightResult) -> None:
+    """Detector class 8: pods stuck pulling an image on an air-gapped cluster.
+
+    The cluster has no registry route to the internet and Harbor is empty, so
+    every image has to be side-loaded into each node's containerd by hand.
+    Nothing enforces that, and scheduling does not care: a pod can land on a
+    node that does not have its image and sit in ImagePullBackOff indefinitely.
+
+    Observed on 2026-09-30: kube-state-metrics had been CrashLoopBackOff for
+    ~15,000 restarts on `raspberrypi`. Deleting the pod to get a clean look at
+    the real error rescheduled it to `pi3`, which does not have the image, and
+    it became ImagePullBackOff -- so the crash loop had been hiding a second,
+    different fault. ArgoCD's application-controller and Longhorn's
+    instance-manager are in the same state.
+
+    The check reports which images are in ImagePullBackOff and on which nodes,
+    so the side-load list is derivable instead of guessed.
+    """
+    code, out, err = _kubectl(["get", "pods", "-A", "-o", "json"])
+    if code != 0:
+        result.add(Check("airgap-image-pull", False, f"could not list pods: {err.strip()}"))
+        return
+    try:
+        pods = json.loads(out).get("items", [])
+    except Exception as e:  # noqa: BLE001
+        result.add(Check("airgap-image-pull", False, f"could not parse pods: {e}"))
+        return
+
+    stuck: dict[str, set] = {}
+    for p in pods:
+        statuses = p.get("status", {}).get("containerStatuses") or []
+        pulling = any(
+            (s.get("state") or {}).get("waiting", {}).get("reason")
+            in ("ImagePullBackOff", "ErrImagePull")
+            for s in statuses
+        )
+        if not pulling:
+            continue
+        for c in p["spec"].get("containers", []):
+            stuck.setdefault(c.get("image", "?"), set()).add(p.get("spec", {}).get("nodeName", "?"))
+
+    if not stuck:
+        result.add(Check("airgap-image-pull", True, "no pods in ImagePullBackOff"))
+        return
+
+    detail = "; ".join(
+        f"{img} on {', '.join(sorted(nodes))}" for img, nodes in sorted(stuck.items())
+    )
+    result.add(
+        Check(
+            "airgap-image-pull",
+            False,
+            f"{len(stuck)} image(s) cannot be pulled: {detail}. The cluster is "
+            "air-gapped, so each image must be side-loaded into every node's "
+            "containerd; a pod scheduled onto a node without it will not start.",
+        )
+    )
+
+
+def _service_cidr() -> str:
+    """The /16 containing the kubernetes Service ClusterIP, or '' if unknown.
+
+    This is the range a NetworkPolicy must NOT rely on for API egress: Calico
+    evaluates policy after kube-proxy's DNAT, so the destination address at
+    evaluation time is the endpoint, not the ClusterIP.
+    """
+    code, out, _ = _kubectl(
+        ["get", "svc", "kubernetes", "-n", "default",
+         "-o", "jsonpath={.spec.clusterIP}"]
+    )
+    if code != 0 or not out.strip():
+        return ""
+    ip = out.strip()
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return ""
+    return f"{parts[0]}.{parts[1]}.0.0/16"
+
+
+def check_apiserver_egress(result: PreflightResult) -> None:
+    """Detector class 9: policy must actually permit reaching the API server.
+
+    Two plausible-looking rules were both wrong here, and each left every
+    in-cluster API client broken with the same opaque error:
+
+      * allowing `kube-system:6443` -- the kubernetes Service listens on 443,
+        and has no backing pods to select, so this matches nothing;
+      * allowing the service CIDR `10.43.0.0/16` on 443 -- Calico evaluates
+        policy in the FORWARD chain, after kube-proxy's DNAT, so the
+        destination it sees is the endpoint address, not the ClusterIP.
+
+    The symptom is `dial tcp 10.43.0.1:443: connect: connection refused` from
+    kube-state-metrics and the Prometheus Operator, and it is indistinguishable
+    from a down API server unless you know to look at the policy.
+
+    This checks that each egress policy carries an ipBlock covering a node
+    network on 443/6443, which is the form that works with Calico.
+    """
+    code, out, err = _kubectl(["get", "networkpolicy", "-A", "-o", "json"])
+    if code != 0:
+        result.add(Check("apiserver-egress", False, f"could not list NetworkPolicies: {err.strip()}"))
+        return
+    try:
+        policies = json.loads(out).get("items", [])
+    except Exception as e:  # noqa: BLE001
+        result.add(Check("apiserver-egress", False, f"could not parse: {e}"))
+        return
+
+    # The service CIDR is exactly the range that does NOT work, because Calico
+    # sees the post-DNAT endpoint address. Derive it from the live Service
+    # rather than hardcoding 10.43.0.0/16, so the check keeps working if the
+    # service CIDR is ever renumbered.
+    svc_cidr = _service_cidr()
+
+    def _has_api_rule(spec: dict) -> bool:
+        for rule in (spec.get("egress") or []):
+            ports = {p.get("port") for p in (rule.get("ports") or [])}
+            if not ({443, 6443} & ports):
+                continue
+            for peer in rule.get("to") or []:
+                block = peer.get("ipBlock")
+                if not block:
+                    continue
+                cidr = block.get("cidr", "")
+                if svc_cidr and cidr == svc_cidr:
+                    # Would only match the ClusterIP, which policy never sees.
+                    continue
+                if cidr.startswith(("10.", "192.168.")):
+                    return True
+        return False
+
+    offenders = [
+        f"{p['metadata'].get('namespace')}/{p['metadata']['name']}"
+        for p in policies
+        if not _has_api_rule(p.get("spec") or {})
+    ]
+    if offenders:
+        result.add(
+            Check(
+                "apiserver-egress",
+                False,
+                f"{len(offenders)} policy/policies do not allow egress to the API "
+                f"server on a node network: {', '.join(offenders)}. Components "
+                "using inClusterConfig will fail with 'connection refused' to "
+                "10.43.0.1:443. Needs an ipBlock on 443/6443; a namespaceSelector "
+                "or the service CIDR alone does not work under Calico.",
+            )
+        )
+    else:
+        result.add(
+            Check(
+                "apiserver-egress",
+                True,
+                f"all {len(policies)} policies allow API server egress on a node network",
+            )
+        )
+
+
 def run_preflight(components: bool = True) -> PreflightResult:
     result = PreflightResult()
     reachable = check_cluster_reachable(result)
@@ -379,5 +595,7 @@ def run_preflight(components: bool = True) -> PreflightResult:
         for name, (ns, selectors) in PIPELINE_COMPONENTS.items():
             check_component(result, name, ns, selectors)
         check_network_policies(result)
+        check_apiserver_egress(result)
         check_jetstream_retention(result)
+        check_airgap_images(result)
     return result

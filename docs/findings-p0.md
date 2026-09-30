@@ -685,3 +685,96 @@ pass-2 series counts now match exactly.
 
 This also contributed to the efficiency gap: at 1000 msg/s, efficiency moved
 from ~93% to 97.3% once the consumer stopped writing twice as much as needed.
+
+---
+
+## D17 — the NetworkPolicy "API egress" fix never worked, and hid behind an unrelated error
+
+Found on 2026-09-30 while fixing the pods that had been failing since April.
+
+### Symptom
+
+`monitoring-kube-state-metrics` and `monitoring-kube-prometheus-operator` were in
+CrashLoopBackOff with ~10,000 and ~15,000 restarts, both logging the same thing:
+
+```
+Get "https://10.43.0.1:443/version": dial tcp 10.43.0.1:443: connect: connection refused
+```
+
+The error reads like a down API server. The API server was fine.
+
+### Two wrong fixes
+
+The repository already claimed to have fixed this. The file's own BUG 6 note
+read:
+
+> ArgoCD, Prometheus, metrics-server and node-exporter all need to reach
+> 10.43.0.1:**6443** (the in-cluster kubernetes ClusterIP). FIX: explicit rule to
+> kube-system:6443 in every namespace policy.
+
+Two independent errors:
+
+1. The `kubernetes` Service listens on **443** and forwards to 6443 on the node.
+   No client ever connects to 6443.
+2. The Service has no backing pods, so `namespaceSelector: kube-system` selects
+   nothing regardless of port.
+
+The first correction — an `ipBlock` on the service CIDR `10.43.0.0/16` on 443 —
+also failed, and this is the non-obvious part. **Calico applies NetworkPolicy in
+the FORWARD chain, which runs after kube-proxy's DNAT in PREROUTING.** By the
+time policy is evaluated the destination is no longer the ClusterIP
+`10.43.0.1:443` but the endpoint `10.0.0.1:6443`.
+
+Isolated with two otherwise identical busybox pods pinned to the same node:
+
+| pod | namespace | result |
+|---|---|---|
+| `apitest-def` | `default` (no policy) | `10.43.0.1:443` **OPEN** |
+| `apitest-mon` | `monitoring` (policy, service CIDR only) | **REFUSED** |
+| `apitest-mon2` | `monitoring`, after adding `10.0.0.0/16` | **OPEN** |
+
+### The fix
+
+Each of the six policies now allows `10.0.0.0/16` and `192.168.1.0/24` on 443 and
+6443, naming the networks the API server is actually reached on. The tradeoff is
+that this permits egress to those two ports anywhere in those ranges; acceptable
+on an air-gapped lab, and tighter rules would need a CNI-specific rewrite.
+
+Verified: kube-state-metrics and the Prometheus Operator are past the network
+error and now fail only on the image problem below. The pipeline is unaffected
+(96.18% at 1000 msg/s, preflight 11/11 apart from the image check).
+
+### A crash loop was hiding a second fault
+
+kube-state-metrics had been crash-looping so long that its original cause was
+invisible. Deleting the pod to read the real error rescheduled it from
+`raspberrypi` to `pi3`, and it went to `ImagePullBackOff` — because `pi3` does
+not have the image. Two unrelated faults, one masking the other, on the same pod.
+
+### New detectors
+
+- `apiserver-egress` (class 9) fails if any policy lacks a node-network ipBlock
+  on 443/6443. It derives the service CIDR from the live Service and explicitly
+  rejects it, so the "obvious" wrong rule cannot pass. Verified by patching the
+  live policy back to the broken form and watching the check fail.
+- `airgap-image-pull` (class 10) lists every image in ImagePullBackOff and the
+  nodes missing it, so the side-load list is derivable rather than guessed. It
+  deliberately does not fire on CrashLoopBackOff, which is a different fault and
+  is exactly what caused the confusion here.
+
+### Remaining, not fixed
+
+The air-gapped image problem itself is untouched and is a project in its own
+right: every image must be side-loaded into every node's containerd, nothing
+enforces it, and scheduling does not consider it. Current state:
+
+```
+longhornio/longhorn-instance-manager:v1.7.2   pi2, pi3, pi4
+quay.io/argoproj/argocd:v3.3.6                pi3
+registry.k8s.io/kube-state-metrics:v2.10.1    pi3
+```
+
+The local host is x86_64, so `docker save` of the arm64 Longhorn image produces an
+amd64 archive; an arm64-capable pull path is needed. This is a prerequisite for
+P1 observability (Prometheus PVC, Loki, Tempo), so it should be scheduled as its
+own piece of work rather than absorbed into it.
