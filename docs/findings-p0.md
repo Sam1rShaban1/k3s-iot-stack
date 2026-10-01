@@ -1252,3 +1252,42 @@ to the broken form and watching it fail, then restoring from Git. One honest
 detail: that live test only exercised the `client_id` half, because the topic
 substitution in the throwaway copy silently did not apply. The `$share` half is
 covered by unit test instead, which is the more reliable place for it.
+
+### Corrected full matrix — `benchmarks/20261001_094417`
+
+Re-run after the shared-subscription fix, superseding D19's numbers, which were
+taken while messages were being duplicated. Same conditions as D19: 5 nodes,
+single k3s version, 30 s per scenario, `purged_all` and `drained_all` true.
+
+| scenario | stored | devices | msg/s | efficiency | p50 | p95 | p99 |
+|---|---|---|---|---|---|---|---|
+| 10c_500r | 14,862 | 10 | 496.6 | 99.32% | 46 ms | 253 ms | 428 ms |
+| 10c_1000r | 29,623 | 10 | 982.7 | 98.27% | 190 ms | 1,055 ms | 1,522 ms |
+| 10c_2000r | 58,841 | 10 | 1,914.0 | 95.70% | 316 ms | 1,158 ms | 1,500 ms |
+| 100c_500r | 14,904 | 100 | 493.2 | 98.63% | 47 ms | 229 ms | 630 ms |
+| 100c_1000r | 29,860 | 100 | 992.4 | 99.24% | 178 ms | 831 ms | 1,153 ms |
+| 100c_2000r | 59,594 | 100 | 1,988.7 | 99.44% | 311 ms | 5,051 ms | 6,163 ms |
+
+Efficiency 95.70–99.44%, and every cell is now inside a plausible band.
+
+**The D19 numbers for latency were also inflated, and not only by duplication.**
+Comparing like for like:
+
+| scenario | D19 p99 | corrected p99 |
+|---|---|---|
+| 10c_500r | 725 ms | 428 ms |
+| 10c_1000r | 1,743 ms | 1,522 ms |
+| 10c_2000r | 1,940 ms | 1,500 ms |
+| 100c_500r | 914 ms | 630 ms |
+| 100c_1000r | 2,304 ms | 1,153 ms |
+| 100c_2000r | 9,531 ms | 6,163 ms |
+
+Every tail improved, and 100c_2000r — the cell D20 was investigating — came
+down by a third. Duplicated traffic loads the consumer twice, so the corrected
+figures are the ones to quote, and D19's table should be treated as withdrawn
+rather than as a second data point.
+
+`100c_2000r` remains the one cell with a pronounced tail (p95 5,051 ms). That is
+consistent with the D20 finding that the tail lives in the ingest path and is
+not moved by scaling Benthos; it has not been re-investigated since the
+duplication fix, and the intra-ingest split remains open.
