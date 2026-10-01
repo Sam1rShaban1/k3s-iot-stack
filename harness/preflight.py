@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from typing import Optional
@@ -586,6 +587,91 @@ def check_apiserver_egress(result: PreflightResult) -> None:
         )
 
 
+def check_benthos_subscription(result: PreflightResult) -> None:
+    """Detector class 11: the bridge must use a shared MQTT subscription.
+
+    Found on 2026-09-30, and it is the worst kind of fault: silent, and it
+    corrupts every measurement rather than breaking the pipeline.
+
+    The live ConfigMap had drifted from Git to subscribe on `sensors/#` instead
+    of `$share/benthos/sensors/#`, and to use a fixed `client_id` shared by all
+    five replicas. Without the shared-subscription group every replica receives
+    every message instead of the group splitting them, so each scenario stored
+    roughly twice its expected volume: 24,930 messages for a 25 s, 500 msg/s run
+    that should have stored 12,500, reported as 187% efficiency. Throughput,
+    latency and every derived statistic were wrong, and nothing failed -- all
+    pods stayed Running, preflight was green, and the report looked plausible.
+
+    Two things make this worth pinning:
+      * a bare topic filter with multiple replicas duplicates delivery;
+      * a client_id that is not unique per replica is worse still, because the
+        broker disconnects the previous session each time a new one arrives.
+
+    This checks the live ConfigMap rather than the Git copy, because the whole
+    failure was that the two disagreed.
+    """
+    code, out, err = _kubectl(["get", "cm", "benthos-config", "-n", "benthos", "-o", "json"])
+    if code != 0:
+        result.add(
+            Check("benthos-shared-subscription", False,
+                  f"could not read the benthos ConfigMap: {err.strip()}")
+        )
+        return
+    try:
+        data = json.loads(out).get("data") or {}
+    except Exception as e:  # noqa: BLE001
+        result.add(Check("benthos-shared-subscription", False, f"could not parse: {e}"))
+        return
+
+    config = data.get("benthos.yaml") or ""
+    replicas = 1
+    code, out, _ = _kubectl(["get", "deploy", "benthos", "-n", "benthos",
+                             "-o", "jsonpath={.spec.replicas}"])
+    if code == 0 and out.strip().isdigit():
+        replicas = int(out.strip())
+
+    topics = re.findall(r"^\s*-\s*(\S+)\s*$", config, re.M)
+    filters = [t for t in topics if "/" in t and not t.startswith("http")]
+    shared = [t for t in filters if t.startswith("$share/")]
+    client_id = ""
+    m = re.search(r"client_id:\s*(\S+)", config)
+    if m:
+        client_id = m.group(1)
+
+    problems = []
+    if replicas > 1 and not shared:
+        problems.append(
+            f"{replicas} replicas subscribe to {filters or ['<none>']} with no "
+            "$share/<group>/ prefix, so every replica receives every message "
+            "and each scenario stores multiples of its true volume"
+        )
+    if replicas > 1 and client_id and "${" not in client_id and client_id != "$share":
+        problems.append(
+            f"client_id {client_id!r} is identical on all {replicas} replicas, so "
+            "each connection displaces the previous session"
+        )
+
+    if problems:
+        result.add(
+            Check(
+                "benthos-shared-subscription",
+                False,
+                "; ".join(problems) + ". The live ConfigMap has drifted from "
+                "Git -- compare `kubectl get cm benthos-config -n benthos -o "
+                "yaml` with manifests/benthos/deployment.yaml.",
+            )
+        )
+    else:
+        result.add(
+            Check(
+                "benthos-shared-subscription",
+                True,
+                f"{len(shared) or 1} shared subscription(s), unique client_id "
+                f"({client_id or 'unset'}) across {replicas} replicas",
+            )
+        )
+
+
 def run_preflight(components: bool = True) -> PreflightResult:
     result = PreflightResult()
     reachable = check_cluster_reachable(result)
@@ -596,6 +682,7 @@ def run_preflight(components: bool = True) -> PreflightResult:
             check_component(result, name, ns, selectors)
         check_network_policies(result)
         check_apiserver_egress(result)
+        check_benthos_subscription(result)
         check_jetstream_retention(result)
         check_airgap_images(result)
     return result

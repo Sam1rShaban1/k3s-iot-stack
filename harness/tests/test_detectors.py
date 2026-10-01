@@ -389,3 +389,82 @@ class TestAirgapImageDetector(unittest.TestCase):
             self._pod("b", "p2", "pi3", "img:2", "ImagePullBackOff"),
         ])
         self.assertIn("2 image(s)", c.detail)
+
+
+class TestBenthosSharedSubscriptionDetector(unittest.TestCase):
+    """A bare topic filter with several replicas duplicates every message.
+
+    Found on 2026-09-30: the live ConfigMap had drifted from Git to
+    `sensors/#` with a fixed client_id. A 25 s, 500 msg/s scenario stored 24,930
+    messages instead of 12,500 and reported 187% efficiency, with every pod
+    Running and preflight green. Nothing failed; every statistic was wrong.
+    """
+
+    CONFIG = """\
+input:
+  mqtt:
+    urls:
+      - tcp://emqx.emqx.svc.cluster.local:1883
+    topics:
+      - {topics}
+    client_id: {client_id}
+    qos: 1
+output:
+  nats:
+    urls:
+      - nats://10.43.203.115:4222
+    subject: iot.data
+"""
+
+    def _run(self, topics, client_id, replicas=5):
+        config = self.CONFIG.format(topics=topics, client_id=client_id)
+        pod = json.dumps({"data": {"benthos.yaml": config}})
+
+        def fake(args, *a, **kw):
+            if "configmap" in args or "cm" in args:
+                return 0, pod, ""
+            return 0, str(replicas), ""
+
+        result = PreflightResult()
+        with mock.patch.object(preflight, "_kubectl", side_effect=fake):
+            preflight.check_benthos_subscription(result)
+        return next(c for c in result.checks if c.name == "benthos-shared-subscription")
+
+    def test_healthy_config_passes(self):
+        c = self._run("$share/benthos/sensors/#", "benthos-consumer-${HOSTNAME}")
+        self.assertTrue(c.ok)
+
+    def test_missing_shared_prefix_fails(self):
+        c = self._run("sensors/#", "benthos-consumer-${HOSTNAME}")
+        self.assertFalse(c.ok)
+        self.assertIn("$share", c.detail)
+        self.assertIn("multiples", c.detail)
+
+    def test_duplicate_client_id_fails(self):
+        c = self._run("$share/benthos/sensors/#", "benthos-consumer")
+        self.assertFalse(c.ok)
+        self.assertIn("identical on all", c.detail)
+
+    def test_both_faults_are_reported_together(self):
+        c = self._run("sensors/#", "benthos-consumer")
+        self.assertFalse(c.ok)
+        self.assertIn("$share", c.detail)
+        self.assertIn("identical", c.detail)
+
+    def test_single_replica_tolerates_no_shared_group(self):
+        """With one replica there is nothing to distribute, so it is not a fault."""
+        c = self._run("sensors/#", "benthos-consumer", replicas=1)
+        self.assertTrue(c.ok)
+
+    def test_mentions_drift_from_git(self):
+        """The failure was that live and Git disagreed; say so."""
+        c = self._run("sensors/#", "benthos-consumer")
+        self.assertIn("drifted from Git", c.detail)
+
+    def test_missing_configmap_is_reported_not_raised(self):
+        result = PreflightResult()
+        with mock.patch.object(preflight, "_kubectl", return_value=(1, "", "not found")):
+            preflight.check_benthos_subscription(result)
+        c = next(c for c in result.checks if c.name == "benthos-shared-subscription")
+        self.assertFalse(c.ok)
+        self.assertIn("could not read", c.detail)

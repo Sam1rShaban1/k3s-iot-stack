@@ -1167,3 +1167,88 @@ Benthos runs at ~65 MiB resident against a 256 MiB request, so 10 replicas add
 roughly 512 MiB of requests per node. `raspberrypi` is the memory-heaviest node
 at 66%, carrying EMQX, ArgoCD, the local-path provisioner and Longhorn, and is
 the one to watch if the bridge is ever scaled much further.
+
+---
+
+## D21 — every measurement was silently doubled by a lost shared subscription
+
+Found on 2026-09-30, immediately after the cluster was recovered and the
+air-gapped images finally delivered. It is the worst class of fault in this
+project: nothing failed, and every derived statistic was wrong.
+
+### Symptom
+
+A 25 s, 500 msg/s, 100-client scenario reported **187% efficiency** — 24,930
+messages stored where 12,500 were published:
+
+| run | stored | devices | reported efficiency |
+|---|---|---|---|
+| 1 | 24,930 | 100 | 187.32% |
+| 2 | 24,956 | 100 | 188.38% |
+| 3 | 24,936 | 100 | 197.27% |
+
+Perfectly reproducible, and close to exactly 2x. An impossible number was the
+only symptom: every pod stayed Running, preflight was green, and the report
+looked entirely plausible.
+
+### Cause
+
+The live `benthos-config` ConfigMap had drifted from Git:
+
+| | live | Git |
+|---|---|---|
+| topics | `sensors/#` | `$share/benthos/sensors/#` |
+| client_id | `benthos-consumer` | `benthos-consumer-${HOSTNAME}` |
+
+Without the `$share/<group>/` prefix, MQTT delivers each message to **every**
+matching subscription rather than splitting the group, so each message reached
+the consumer more than once. The fixed `client_id` is worse on its own: the
+broker disconnects the previous session each time a new replica connects.
+
+The duplication is invisible in the obvious places, which is why it survived:
+
+- `unique_devices` stayed correct at 100, because duplicates carry the same
+  `device_id`;
+- all four timestamp series held identical sample counts, so the D16
+  duplication check passed — the duplication was upstream of the consumer, not
+  in its rendering;
+- throughput and latency were self-consistent, just computed over twice the
+  real traffic.
+
+### Why the drift happened
+
+The ConfigMap's `last-applied-configuration` annotation still recorded the
+correct `$share/` version while `data` held the wrong one, so the object had
+been written by something that did not go through `kubectl apply` — or applied
+from a different source. **Not established.** What is established is that the
+effective configuration was not the version in Git, which is the same failure as
+D12 (declared replicas != live replicas) and the reason the new detector reads
+the live object rather than the manifest.
+
+### Resolution
+
+Applied the Git version, restarted Benthos (it does not hot-reload), and
+confirmed:
+
+| run | stored | devices | efficiency |
+|---|---|---|---|
+| 1 | 12,422 | 100 | 100.14% |
+| 2 | 12,455 | 100 | 100.29% |
+
+against 12,500 expected.
+
+### New detector
+
+`benthos-shared-subscription` (class 11) reads the **live** ConfigMap and fails
+when there is more than one replica and either the topic filter has no
+`$share/<group>/` prefix, or `client_id` is not unique per replica. A single
+replica legitimately needs neither, so the check is replica-aware.
+
+Seven tests cover the healthy case, each fault separately, both together, the
+single-replica tolerance, and a missing ConfigMap.
+
+The detector was verified against the live cluster by reverting the ConfigMap
+to the broken form and watching it fail, then restoring from Git. One honest
+detail: that live test only exercised the `client_id` half, because the topic
+substitution in the throwaway copy silently did not apply. The `$share` half is
+covered by unit test instead, which is the more reliable place for it.
