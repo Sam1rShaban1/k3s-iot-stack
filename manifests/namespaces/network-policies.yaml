@@ -504,17 +504,46 @@ spec:
           port: 18083
         - protocol: TCP
           port: 8883
+    # Scrape targets that run with hostNetwork -- node-exporter and the kubelet
+    # listen on a NODE address, and a namespaceSelector cannot match a node
+    # address because it only ever matches pod IPs. Without an ipBlock for the
+    # node networks these targets are unreachable however permissive the
+    # namespace rules look.
     - to:
-        - namespaceSelector: {}
+        - ipBlock:
+            cidr: 10.0.0.0/16
+        - ipBlock:
+            cidr: 192.168.1.0/24
       ports:
         - protocol: TCP
           port: 9100
+        - protocol: TCP
+          port: 10250
     # Grafana -> Prometheus
     - to:
         - namespaceSelector: {}
       ports:
         - protocol: TCP
           port: 9090
+    # In-cluster metrics endpoints. kube-state-metrics and the Prometheus
+    # Operator both serve on 8080, CoreDNS on 9153. These were absent, so
+    # Prometheus had three permanently-down job groups while reporting itself
+    # healthy -- the same silent-observability-blindness that lost paper 1's
+    # historical metrics, one layer down.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: TCP
+          port: 9153
     - to:
         - namespaceSelector:
             matchLabels:

@@ -1321,3 +1321,81 @@ worse on efficiency. Reliable per-message acknowledgement appears to change how
 the ingest path queues rather than simply adding work — consistent with the
 D20 finding that the tail lives upstream of NATS, where ack semantics would
 matter most. Not explained, only observed.
+
+---
+
+## D22 — Prometheus was durable-less *and* blind
+
+The `EmptyDir` TSDB was the known half of this. Fixing it exposed a second
+half nobody had noticed, because the Prometheus pod had been reporting itself
+healthy throughout.
+
+### Durable storage
+
+The `Prometheus` CR is rendered from the upstream `kube-prometheus-stack`
+chart, which was given no storage parameters, so the TSDB landed on an
+`emptyDir` and every pod restart destroyed all infrastructure metrics.
+
+The field is **`spec.storage`**, not `spec.storageSpec`. A patch naming
+`storageSpec` is accepted with `Warning: unknown field` and silently discarded,
+which cost one round trip; the CRD for this operator version accepts only
+`spec.storage`, with `volumeClaimTemplate` beneath it.
+
+Now `retention: 15d` and a 5 GiB `ReadWriteOnce` claim on `local-path`.
+`local-path` deliberately, not Longhorn: Longhorn's instance-manager image was
+missing on three of five nodes for months, so depending on it for the metrics
+store would repeat the mistake.
+
+### The blind half
+
+With the PVC in place and Prometheus actually scraping, only **3 of 30 targets
+were up**. The `monitoring-network-policy` permitted a handful of ports:
+
+| target | port | reachable? |
+|---|---|---|
+| apiserver | 6443 | yes |
+| coredns metrics | 9153 | no — port absent |
+| kube-state-metrics | 8080 | no — port absent |
+| prometheus-operator | 8080 | no — port absent |
+| kubelet | 10250 | no — port absent |
+| node-exporter | 9100 | no — see below |
+
+node-exporter was the instructive one. The policy *did* allow 9100, but with
+`namespaceSelector: {}`, and node-exporter runs with `hostNetwork: true`, so it
+listens on a **node** address. A namespaceSelector only ever matches pod IPs, so
+no namespace rule can permit scraping a host-network target — it needs an
+`ipBlock` covering the node networks.
+
+So Prometheus had been running, reporting itself healthy, and collecting almost
+nothing. This is the same failure as losing paper 1's metrics, one layer down:
+the loss was noticed, the blindness that preceded it was not.
+
+After adding `ipBlock` egress for `10.0.0.0/16` and `192.168.1.0/24` on 9100 and
+10250, plus 8080 to `monitoring` and 9153 to `kube-system`:
+
+| job | before | after |
+|---|---|---|
+| apiserver | 1/1 | 1/1 |
+| kubelet | 0/15 | **15/15** |
+| node-exporter | 0/5 | **5/5** |
+| kube-state-metrics | 0/1 | **1/1** |
+| prometheus-operator | 0/1 | **1/1** |
+| prometheus (self) | 2/2 | 4/4 |
+| coredns | 0/3 | 0/3 |
+| **total** | **3/28** | **27/30** |
+
+coredns metrics remain down. The 9153 rule targets `name: kube-system`, and the
+likely cause is that the namespace carries only
+`kubernetes.io/metadata.name=kube-system`, not a `name` label — which would
+mean every `matchLabels: {name: ...}` selector in these policies matches
+nothing, including the DNS rule that preflight credits as working. **Not
+confirmed and not fixed here**; it is the next thing to check, because it would
+affect several rules at once.
+
+### Images the recreated StatefulSet needed
+
+Switching to a PVC recreates the pod, which pulled two images the nodes had
+never needed: `prometheus-config-reloader:v0.70.0` and
+`prometheus:v2.48.1`. Both were delivered through the mirror from D21's
+tooling. Worth expecting on any storage or version change: a StatefulSet
+recreation is an image-pull event.

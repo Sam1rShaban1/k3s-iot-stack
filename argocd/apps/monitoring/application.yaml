@@ -32,6 +32,33 @@ spec:
         value: "true"
       - name: grafana.sidecar.datasources.defaultDatasourceEnabled
         value: "false"
+      # Durable Prometheus storage.
+      #
+      # Without a storage spec the chart leaves the TSDB on an emptyDir, so
+      # every pod restart destroys all infrastructure metrics. That is exactly
+      # how paper 1 lost its historical metrics: the Prometheus pod was
+      # terminated, the samples went with it, and nothing in the pipeline was
+      # affected -- only the observability record of it.
+      #
+      # The field is `storage`, not `storageSpec`: this operator's CRD only
+      # accepts spec.storage, and a patch naming storageSpec is accepted with
+      # "unknown field" and silently discarded.
+      #
+      # 5 GiB on a node with ~8 GB, matching the cluster's SD cards rather than
+      # the chart's much larger default, which would not fit. local-path
+      # provisioner backs the claim, so this does not depend on Longhorn being
+      # healthy -- which matters, because Longhorn's instance-manager image was
+      # missing on three of five nodes for months.
+      - name: prometheus.prometheusSpec.storage.volumeClaimTemplate.spec.accessModes
+        value: ReadWriteOnce
+      - name: prometheus.prometheusSpec.storage.volumeClaimTemplate.spec.resources.requests.storage
+        value: 5Gi
+      # 15d, so a benchmark series and the node metrics around it survive a
+      # restart and can be compared across runs.
+      - name: prometheus.prometheusSpec.retention
+        value: 15d
+      - name: prometheus.prometheusSpec.scrapeInterval
+        value: 15s
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
