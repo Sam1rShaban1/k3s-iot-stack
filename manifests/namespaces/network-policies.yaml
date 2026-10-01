@@ -540,7 +540,14 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              name: kube-system
+              # NOT `name: kube-system`. The kube-system namespace carries only
+              # `kubernetes.io/metadata.name`, so a selector on `name` matches
+              # nothing and the rule is silently inert -- which is how coredns
+              # metrics stayed at 0/3 while preflight reported the DNS rule as
+              # working. Namespaces created by Kubernetes get the
+              # kubernetes.io/metadata.name label automatically; `name` is a
+              # convention this project applied only to its own namespaces.
+              kubernetes.io/metadata.name: kube-system
       ports:
         - protocol: TCP
           port: 9153

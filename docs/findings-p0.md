@@ -1399,3 +1399,50 @@ never needed: `prometheus-config-reloader:v0.70.0` and
 `prometheus:v2.48.1`. Both were delivered through the mirror from D21's
 tooling. Worth expecting on any storage or version change: a StatefulSet
 recreation is an image-pull event.
+
+### The `name: kube-system` selector was inert
+
+Fixing coredns turned out to be one label. The 9153 rule selected
+
+```yaml
+namespaceSelector:
+  matchLabels:
+    name: kube-system
+```
+
+and `kube-system` carries **only** `kubernetes.io/metadata.name`:
+
+```
+kube-system   {"kubernetes.io/metadata.name":"kube-system"}
+monitoring    {"kubernetes.io/metadata.name":"monitoring","name":"monitoring",...}
+```
+
+`name` is a convention this project applied to its *own* namespaces; namespaces
+created by Kubernetes get the `kubernetes.io/metadata.name` label instead. So
+every selector of the form `matchLabels: {name: kube-system}` matched nothing
+and the rule was inert — which is why coredns stayed at 0/3 while the preflight
+DNS check reported the policy as fine, since that check looks for a bare
+`podSelector`, not at whether the namespace selector resolves.
+
+Final state, after correcting the selector:
+
+| job | before | after |
+|---|---|---|
+| apiserver | 1/1 | 1/1 |
+| coredns | 0/3 | **3/3** |
+| kube-state-metrics | 0/1 | 1/1 |
+| kubelet | 0/15 | 15/15 |
+| prometheus-operator | 0/1 | 1/1 |
+| prometheus (self) | 2/2 | 4/4 |
+| node-exporter | 0/5 | 5/5 |
+| **total** | **3/28** | **30/30** |
+
+**The lesson generalises past this one label.** A NetworkPolicy rule whose
+namespace selector matches nothing is indistinguishable, from the API, from a
+rule that is doing its job — it parses, it applies, and it permits nothing.
+Every policy in this cluster had been checked for *shape* (bare podSelector,
+API-server egress) and never for whether its selectors actually resolve to
+anything. A cheap detector would evaluate each egress rule's namespaceSelector
+against the live namespace labels and fail when it selects zero namespaces; that
+is the natural next detector after the eleven already in place, and it would
+have caught this before it cost a Prometheus redeploy.
