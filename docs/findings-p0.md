@@ -1291,3 +1291,33 @@ rather than as a second data point.
 consistent with the D20 finding that the tail lives in the ingest path and is
 not moved by scaling Benthos; it has not been re-investigated since the
 duplication fix, and the intra-ingest split remains open.
+
+### Corrected QoS 1 matrix — `benchmarks/20261001_113106`
+
+Taken after the duplication fix, same conditions as the corrected QoS 0 matrix.
+
+| scenario | QoS 0 msg/s | QoS 0 eff% | QoS 0 p99 | QoS 1 msg/s | QoS 1 eff% | QoS 1 p99 | delta eff |
+|---|---|---|---|---|---|---|---|
+| 10c_500r | 496.6 | 99.32 | 428 ms | 497.8 | 99.56 | 421 ms | +0.24 |
+| 10c_1000r | 982.7 | 98.27 | 1,522 ms | 977.8 | 97.78 | 1,978 ms | −0.49 |
+| 10c_2000r | 1,914.0 | 95.70 | 1,500 ms | 1,932.0 | 96.60 | 1,739 ms | +0.90 |
+| 100c_500r | 493.2 | 98.63 | 630 ms | 499.5 | 99.89 | 954 ms | +1.26 |
+| 100c_1000r | 992.4 | 99.24 | 1,153 ms | 972.0 | 97.20 | 2,211 ms | −2.04 |
+| 100c_2000r | 1,988.7 | 99.44 | 6,163 ms | 1,911.7 | 95.58 | 3,623 ms | −3.86 |
+
+QoS 0 mean 98.43%, QoS 1 mean 97.77%, difference **−0.66 points**, range −3.86
+to +1.26.
+
+This reproduces the pre-duplication D19 result (−0.59 points) on an independent
+set of runs, which is the useful part: the conclusion that QoS 1 costs well
+under a point of throughput at these rates does not depend on either the
+duplication fault or a single lucky run. **Paper §V-C's "~50 msg/s per
+connection serialization ceiling" remains contradicted**, and now by two
+independent measurements.
+
+One asymmetry worth recording rather than smoothing: at 100c_2000r, QoS 1 has a
+*better* tail than QoS 0 (p99 3,623 ms against 6,163 ms) while being 3.86 points
+worse on efficiency. Reliable per-message acknowledgement appears to change how
+the ingest path queues rather than simply adding work — consistent with the
+D20 finding that the tail lives upstream of NATS, where ack semantics would
+matter most. Not explained, only observed.
