@@ -672,6 +672,106 @@ def check_benthos_subscription(result: PreflightResult) -> None:
         )
 
 
+def check_policy_selectors_resolve(result: PreflightResult) -> None:
+    """Detector class 12: a policy rule that selects nothing is not a policy.
+
+    Found on 2026-09-30 while fixing Prometheus. The monitoring policy had a
+    rule selecting `namespaceSelector: {matchLabels: {name: kube-system}}`, and
+    kube-system carries only `kubernetes.io/metadata.name` -- `name` is a
+    convention this project applied to its own namespaces, not something
+    Kubernetes puts on the ones it creates. The rule parsed, applied, and
+    permitted nothing, so coredns metrics stayed at 0/3 while Prometheus
+    reported itself healthy.
+
+    The general hazard: from the API, a rule whose selector matches zero
+    namespaces is indistinguishable from one that is working. It is accepted,
+    it is enforced, and it allows nothing. Every earlier check here validated
+    rule *shape* -- bare podSelector, API-server egress -- and never whether the
+    selectors resolve, which is why this survived.
+
+    This evaluates each egress rule's namespaceSelector against the live
+    namespace labels and reports any that select nothing.
+    """
+    code, out, err = _kubectl(["get", "namespace", "-o", "json"])
+    if code != 0:
+        result.add(Check("policy-selectors-resolve", False,
+                         f"could not list namespaces: {err.strip()}"))
+        return
+    try:
+        namespaces = json.loads(out).get("items", [])
+    except Exception as e:  # noqa: BLE001
+        result.add(Check("policy-selectors-resolve", False, f"could not parse: {e}"))
+        return
+    labelled = [
+        (n["metadata"]["name"], (n["metadata"].get("labels") or {}))
+        for n in namespaces
+    ]
+
+    code, out, err = _kubectl(["get", "networkpolicy", "-A", "-o", "json"])
+    if code != 0:
+        result.add(Check("policy-selectors-resolve", False,
+                         f"could not list NetworkPolicies: {err.strip()}"))
+        return
+    try:
+        policies = json.loads(out).get("items", [])
+    except Exception as e:  # noqa: BLE001
+        result.add(Check("policy-selectors-resolve", False, f"could not parse: {e}"))
+        return
+
+    def matches(selector: dict, labels: dict) -> bool:
+        """Does one namespace's label set satisfy this namespaceSelector?"""
+        for key, want in (selector.get("matchLabels") or {}).items():
+            if labels.get(key) != want:
+                return False
+        for expr in selector.get("matchExpressions") or []:
+            op, key, values = expr.get("operator"), expr.get("key"), expr.get("values") or []
+            present = key in labels
+            if op == "In" and (not present or labels[key] not in values):
+                return False
+            if op == "NotIn" and present and labels[key] in values:
+                return False
+            if op == "Exists" and not present:
+                return False
+            if op == "DoesNotExist" and present:
+                return False
+        return True
+
+    inert: list[str] = []
+    total = 0
+    for policy in policies:
+        ns = policy["metadata"].get("namespace")
+        name = policy["metadata"].get("name")
+        for rule in ((policy.get("spec") or {}).get("egress") or []):
+            for peer in (rule.get("to") or []):
+                sel = peer.get("namespaceSelector")
+                if sel is None:
+                    continue
+                total += 1
+                # An empty selector means "all namespaces" by definition, and
+                # that is a deliberate choice, not an accident.
+                if not sel:
+                    continue
+                if not any(matches(sel, labels) for _, labels in labelled):
+                    inert.append(f"{ns}/{name} {json.dumps(sel.get('matchLabels') or sel)}")
+
+    if inert:
+        result.add(
+            Check(
+                "policy-selectors-resolve",
+                False,
+                f"{len(inert)} of {total} namespaceSelector rules select no "
+                f"namespace and so permit nothing: {'; '.join(inert)}. Namespaces "
+                "created by Kubernetes carry `kubernetes.io/metadata.name`, not "
+                "`name`, so a selector on the latter is silently inert.",
+            )
+        )
+    else:
+        result.add(
+            Check("policy-selectors-resolve", True,
+                  f"all {total} namespaceSelector rules resolve to at least one namespace")
+        )
+
+
 def run_preflight(components: bool = True) -> PreflightResult:
     result = PreflightResult()
     reachable = check_cluster_reachable(result)
@@ -682,6 +782,7 @@ def run_preflight(components: bool = True) -> PreflightResult:
             check_component(result, name, ns, selectors)
         check_network_policies(result)
         check_apiserver_egress(result)
+        check_policy_selectors_resolve(result)
         check_benthos_subscription(result)
         check_jetstream_retention(result)
         check_airgap_images(result)

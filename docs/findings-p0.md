@@ -1446,3 +1446,23 @@ anything. A cheap detector would evaluate each egress rule's namespaceSelector
 against the live namespace labels and fail when it selects zero namespaces; that
 is the natural next detector after the eleven already in place, and it would
 have caught this before it cost a Prometheus redeploy.
+
+### Detector 12 — `policy-selectors-resolve`
+
+Added, with six tests. It evaluates each NetworkPolicy egress rule's
+`namespaceSelector` against live namespace labels and fails when a rule selects
+zero namespaces, reporting the policy, namespace and selector so the offender is
+named rather than counted.
+
+Covered: inert `matchLabels`, resolvable selectors, empty selectors (which mean
+"all namespaces" by definition and must not be flagged), `matchExpressions` for
+all four operators (`In`, `NotIn`, `Exists`, `DoesNotExist`), `ipBlock` peers
+(which have no namespace and cannot be inert), and namespace-listing failure
+reported rather than raised.
+
+`matchExpressions` is the subtle part. `NotIn` and `DoesNotExist` must *not*
+raise when the key is absent — absence is exactly what they test for — so a
+naive "key missing means no match" shortcut would invert their meaning and
+manufacture false failures.
+
+Preflight is now 15 checks; 146 tests pass.

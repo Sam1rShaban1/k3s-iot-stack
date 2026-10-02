@@ -468,3 +468,91 @@ output:
         c = next(c for c in result.checks if c.name == "benthos-shared-subscription")
         self.assertFalse(c.ok)
         self.assertIn("could not read", c.detail)
+
+
+class TestPolicySelectorResolve(unittest.TestCase):
+    """Detector class 12: a rule that selects nothing is not a policy.
+
+    Found on 2026-09-30 while fixing Prometheus. The monitoring policy had a
+    rule selecting `namespaceSelector: {matchLabels: {name: kube-system}}`, but
+    kube-system carries only `kubernetes.io/metadata.name`. The rule applied
+    cleanly and permitted nothing, so coredns metrics stayed at 0/3 while
+    Prometheus reported itself healthy.
+
+    From the API an unresolvable selector is indistinguishable from a working
+    one. Earlier checks validated rule *shape*; none validated that selectors
+    resolve.
+    """
+
+    NAMESPACES = json.dumps({"items": [
+        {"metadata": {"name": "kube-system",
+                      "labels": {"kubernetes.io/metadata.name": "kube-system"}}},
+        {"metadata": {"name": "monitoring",
+                      "labels": {"kubernetes.io/metadata.name": "monitoring",
+                                 "name": "monitoring"}}},
+    ]})
+
+    def _run(self, egress):
+        policies = json.dumps({"items": [{
+            "metadata": {"namespace": "monitoring", "name": "monitoring-network-policy"},
+            "spec": {"egress": egress},
+        }]})
+
+        def fake(args, *a, **kw):
+            if "networkpolicy" in args:
+                return 0, policies, ""
+            return 0, self.NAMESPACES, ""
+
+        result = PreflightResult()
+        with mock.patch.object(preflight, "_kubectl", side_effect=fake):
+            preflight.check_policy_selectors_resolve(result)
+        return next(c for c in result.checks if c.name == "policy-selectors-resolve")
+
+    def test_inert_selector_fails(self):
+        c = self._run([{"to": [{"namespaceSelector": {
+            "matchLabels": {"name": "kube-system"}}}], "ports": [{"port": 9153}]}])
+        self.assertFalse(c.ok)
+        self.assertIn("name", c.detail)
+        self.assertIn("kube-system", c.detail)
+
+    def test_resolvable_selector_passes(self):
+        c = self._run([{"to": [{"namespaceSelector": {
+            "matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}}],
+            "ports": [{"port": 9153}]}])
+        self.assertTrue(c.ok, c.detail)
+
+    def test_empty_selector_means_all_namespaces_not_a_fault(self):
+        """Empty is a deliberate 'everything', so it must not be flagged."""
+        c = self._run([{"to": [{"namespaceSelector": {}}]}])
+        self.assertTrue(c.ok, c.detail)
+
+    def test_match_expressions_evaluated(self):
+        for selector, should_pass in (
+            ({"matchExpressions": [{"key": "kubernetes.io/metadata.name",
+                                    "operator": "In", "values": ["kube-system"]}]}, True),
+            ({"matchExpressions": [{"key": "kubernetes.io/metadata.name",
+                                    "operator": "In", "values": ["nonexistent"]}]}, False),
+            ({"matchExpressions": [{"key": "tier", "operator": "DoesNotExist"}]}, True),
+            ({"matchExpressions": [{"key": "tier", "operator": "Exists"}]}, False),
+        ):
+            with self.subTest(selector=selector):
+                c = self._run([{"to": [{"namespaceSelector": selector}]}])
+                self.assertEqual(c.ok, should_pass, c.detail)
+
+    def test_ipblock_peers_are_not_namespace_selectors(self):
+        """A node-network ipBlock has no namespace and is never inert."""
+        c = self._run([{"to": [{"ipBlock": {"cidr": "10.0.0.0/16"}}]}])
+        self.assertTrue(c.ok, c.detail)
+
+    def test_namespace_listing_failure_is_reported_not_raised(self):
+        def fake(args, *a, **kw):
+            if "namespace" in args:
+                return 1, "", "forbidden"
+            return 0, json.dumps({"items": []}), ""
+
+        result = PreflightResult()
+        with mock.patch.object(preflight, "_kubectl", side_effect=fake):
+            preflight.check_policy_selectors_resolve(result)
+        c = next(c for c in result.checks if c.name == "policy-selectors-resolve")
+        self.assertFalse(c.ok)
+        self.assertIn("could not list namespaces", c.detail)
