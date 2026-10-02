@@ -16,5 +16,15 @@ metadata:
 spec:
   ipAddressPools:
   - default-pool
-  interfaces:
-  - eth0
+  # No `interfaces:` restriction on purpose.
+  #
+  # This listed `eth0`, but the pool is 192.168.1.240-250 and eth0 is the
+  # 10.0.0.0/24 segment. The nodes reach the home LAN on wlan0, so the speaker
+  # was announcing an address from one network onto another -- ARP replies that
+  # no client on 192.168.1.0/24 would ever accept.
+  #
+  # Interface naming is also not uniform here: the speaker runs on every node,
+  # and which interface fronts the LAN differs per node. Pinning a name that is
+  # only correct on some of them is how this broke. Letting MetalLB announce on
+  # every interface makes the advertisement follow the address instead of
+  # assuming where it lives.

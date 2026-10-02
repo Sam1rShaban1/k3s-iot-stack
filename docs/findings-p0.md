@@ -1466,3 +1466,42 @@ naive "key missing means no match" shortcut would invert their meaning and
 manufacture false failures.
 
 Preflight is now 15 checks; 146 tests pass.
+
+---
+
+## D23 — MetalLB was announcing on the wrong interface
+
+The `L2Advertisement` named `eth0`, while the pool is `192.168.1.240-250`. But
+`eth0` is the `10.0.0.0/24` segment; the nodes reach the home LAN on `wlan0`.
+The speaker was therefore emitting ARP replies for an address belonging to
+192.168.1.0/24 onto 10.0.0.0/24 — announcements no client on the home LAN would
+ever accept.
+
+The `interfaces` restriction is now removed entirely rather than corrected to a
+different name. Two reasons:
+
+1. **The name is not uniform.** The speaker is a DaemonSet, so it runs on all
+   five nodes, and which interface fronts the LAN differs per node. Pinning
+   `wlan0` would be correct only on some of them.
+2. **The restriction is what made it break.** Letting MetalLB announce on every
+   interface makes the advertisement follow the address instead of assuming
+   where it lives.
+
+Verified rather than assumed: a throwaway `LoadBalancer` service was assigned
+`192.168.1.240`, and the workstation — on the home LAN, not in-cluster — fetched
+it with `HTTP 200` in 60 ms. The probe was then removed.
+
+Note the verification trap hit along the way. The first probe used
+`registry.k8s.io/echoserver`, which this air-gapped cluster cannot pull, so the
+VIP was assigned and correctly announced while nothing was listening behind it —
+a connection refused that reads like a MetalLB failure. The address assignment
+and the advertisement were both fine. Reusing an image already present
+(`busybox:1.36`) separated the two questions. **EMQX stays on its NodePort**
+(`192.168.1.50:31883`) for now: it is the path the benchmark harness uses, and
+moving ingest ingress to a VIP is a change worth making on purpose rather than
+as a side effect of fixing the announcer.
+
+The 3446 restarts on `metallb-speaker-r5rdc` are historical, not current:
+the logs are dated 2026-06-30 and are all `dial tcp 10.43.0.1:443: network is
+unreachable`, i.e. a node that had lost contact with the API service IP. All
+five speakers are Running now.
