@@ -9,6 +9,23 @@
 | 3-node | 3× Pi 4B (8GB) | MQTT → EMQX → Benthos → NATS → Python Consumer → VM |
 | 5-node | 5× Pi 4B (8GB) | MQTT → EMQX → Benthos → NATS → Python Consumer (batch) → VM |
 
+> **Corrections applied (see `docs/findings-p0.md` for evidence).**
+>
+> - Results in this report were collected while two measurement faults were
+>   present and must be read with that in mind. Any efficiency figure above
+>   ~100% is invalid: Benthos was duplicating every message (D21).
+> - The QoS 1 cost reported here is wrong by construction. It came from Paho's
+>   default 10-message in-flight window, not from a QoS serialization ceiling.
+>   Corrected: **−0.66 percentage points** of efficiency, not a ~10x throughput
+>   loss (D15/D16/D19).
+> - Latency percentiles in this report are invalid. The timestamp was taken on
+>   arrival at VictoriaMetrics rather than at publish, and the sample export was
+>   not scoped to the scenario, so stale history contaminated the aggregates.
+>   Throughput and message counts remain usable with caveats (D4/D5).
+> - Broker ingress is now `192.168.1.241:1883` (MetalLB), not a NodePort.
+> - `Go Consumer` rows predate the switch to the Python consumer and are kept
+>   only for the 1- and 2-node scaling comparison.
+
 ## Test Parameters
 
 - **Test Duration**: 60s per scenario

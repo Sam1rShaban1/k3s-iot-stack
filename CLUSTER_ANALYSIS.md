@@ -1,4 +1,14 @@
 # K3s IoT Stack — Full Cluster Analysis
+
+> **This document is a historical record and contains claims that later
+> measurements overturned.** It was written across a long investigation and
+> several sections were never corrected as the evidence changed.
+>
+> The authoritative record of what is currently believed, and of what was
+> withdrawn and why, is [`docs/findings-p0.md`](docs/findings-p0.md). Where the
+> two disagree, `findings-p0.md` is right and this file is stale. Individual
+> superseded claims are marked **[STALE]** inline and collected in
+> [Superseded benchmark claims](#superseded-benchmark-claims) at the end.
 ## Prometheus Metrics + Logs + Traces + Benchmark Performance
 
 > **Generated**: 2026-06-02 | **Cluster**: 5× Raspberry Pi 4B (8GB)
@@ -132,7 +142,7 @@ VictoriaMetrics       OK        Just started, empty data
 Prometheus            DOWN      Terminating (pod on NotReady node)
 Grafana               OK        3/3 running
 ArgoCD                DEGRADED  Repo-server Init:Error, sync Unknown
-MetalLB               OK        Controller 1/1, Speaker 4/4
+MetalLB               OK        Controller 1/1, Speaker 5/5  **[STALE]** — the L2Advertisement named the wrong interface for months. See D23.
 Longhorn              DEGRADED  Progressing, manager CrashLoopBackOff
 Logging (Loki/Tempo)  NOT DEPLOYED  Namespace empty
 ```
@@ -153,7 +163,7 @@ VM Used Memory:   2,796 MB (34.1%)
 Health:        Healthy (just started)
 Storage:       10Gi PVC (Longhorn)
 Data Series:   0 (empty — no metrics stored)
-NodePort:      30000
+NodePort:      30000  **[STALE]** — EMQX is now `LoadBalancer` on 192.168.1.241:1883 via MetalLB. See findings-p0.md D23/D24.
 ```
 
 ### 2g. NATS JetStream State
@@ -1409,7 +1419,7 @@ Best case: 1-node 24 msg/s → 5-node 1,966 msg/s = 82× improvement
 ```
 Component           Storage Type    Retention    Status
 ────────────────────────────────────────────────────────────
-Prometheus          EmptyDir        None         TERMINATED on pi7 (NotReady) → DATA LOST
+Prometheus          PVC (5Gi)       15d retention TERMINATED on pi7 (NotReady) → DATA LOST  **[FIXED]** — see D22.
 VictoriaMetrics     16Gi PVC        45 days      Running but 0 series (cleared May 19)
 Node Exporters      (live scrape)   —            4/5 running, but Prometheus not scraping
 Grafana             (dashboards)    —            Running, but no data source
@@ -1477,7 +1487,7 @@ iot_sensor_pm10                 → PM10 readings
 #### Fix Required
 ```
 1. Remove nodeName: pi7 from Prometheus StatefulSet
-2. Add PVC for Prometheus TSDB (replace EmptyDir)
+2. ~~Add PVC for Prometheus TSDB~~ **[DONE]** — 5 GiB claim on `local-path`, retention 15d, D22.
 3. Configure Prometheus to scrape node exporters on Ready nodes
 4. Consider Thanos or remote-write for Prometheus data durability
 ```
@@ -1688,3 +1698,29 @@ kube-system        Metrics Server      raspberrypi
 ---
 
 *Report generated 2026-06-02 from locally collected benchmark data (184 runs, March 19 – May 19, 2026) and live cluster queries.*
+
+
+---
+
+## Superseded benchmark claims
+
+Recorded here so a reader of the older sections above is not misled. Full
+detail and reasoning in `docs/findings-p0.md`.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| QoS 1 costs ~10x throughput; ~50 msg/s/connection is a serialization ceiling | **Withdrawn** | `publisher.c` used Paho's default 10-message in-flight window. Raising it to 1000 removed the ceiling: 8.63 → 94.72 msg/s per connection. Corrected matrices put the true QoS 1 cost at **0.66 percentage points** of efficiency (QoS 0 mean 98.43%, QoS 1 mean 97.77%), measured twice on independent runs. See D15/D16/D19. |
+| Efficiency ~199% | **Withdrawn** | Live Benthos had drifted to `sensors/#` with a fixed `client_id`, so a shared subscription was fanned out to all 5 replicas and every message was delivered five times. Restored `$share/benthos/sensors/#` and `client_id: benthos-consumer-${HOSTNAME}`; measured 100.14–100.29%. Now guarded by the `benthos-shared-subscription` detector. See D21. |
+| Historical latency figures (p50/p95/p99) | **Invalid** | Timestamps were stamped on arrival at VictoriaMetrics rather than at publish, and the sample export was not scoped to the scenario window or device set, so stale history contaminated every aggregate. Throughput and message counts from those runs remain usable with the caveats in D4; latency does not. See D4/D5. |
+| Benthos 5 → 10 replicas does not improve tail latency | **Withdrawn, needs re-test** | Measured while duplication was inflating the workload. The comparison was internally controlled, but the operating point has since improved by roughly a third, so the conclusion should be re-established on clean state. The five-replica, one-per-node topology is retained on anti-affinity grounds, not on this result. See D20. |
+| MetalLB is healthy | **Stale** | The `L2Advertisement` named `eth0` (the 10.0.0.0/24 fabric) while the pool is 192.168.1.240-250, so it advertised a LAN address onto the fabric network. See D23. |
+| Prometheus `EmptyDir` TSDB | **Fixed, and worse than recorded** | Now a 5 GiB PVC with 15d retention. Fixing it revealed that Prometheus had been scraping only 3 of 30 targets while reporting itself healthy — the policy blocked most scrape ports, and a `namespaceSelector` on `name: kube-system` matched no namespace. Now 30/30, guarded by detector 12. See D22. |
+
+### Still open
+
+- **Intra-ingest latency.** 94% of p99 is inside `publisher → EMQX → Benthos →
+  NATS`; the storage side is 123 ms. EMQX and Benthos are both suspects and are
+  not yet separated.
+- **Benthos ConfigMap drift.** The duplication fault was found live but the
+  mechanism that wrote it was never identified, so the recurrence risk is
+  unquantified.
