@@ -34,30 +34,38 @@ data:
     # work; the stage attribution it was for is answered well enough without it
     # (see docs/findings-p0.md D20).
     pipeline:
-      processors:
-        # Stage attribution for the ingest tail. BENCH-TESTED, then verified live.
-        #
-        # Two earlier forms were wrong and both are worth remembering:
-        #
-        # 1. `root.benthos_entry_ts = ...` -- the MQTT input's root is the RAW
-        #    PAYLOAD BYTES, not a parsed object. This coerced the message into an
-        #    object holding only that one field; the consumer then got a payload
-        #    with no device_id and no ts, emitted one series, and the scenario
-        #    reported stored=0 at 0% efficiency with every pod Running and
-        #    preflight green. In a `benthos test` unit-test context this form
-        #    appears to WORK, because there the root is an object rather than
-        #    bytes -- so the unit test is not a faithful substitute for a live
-        #    check, which is why the live verification below is the real one.
-        #
-        # 2. `root = this.parse_json().assign("k", v)` -- `assign` in Benthos
-        #    4.1.0 takes ONE argument, not a path and a value. `benthos lint`
-        #    rejects it: "wrong number of arguments, expected 1, got 2".
-        #
-        # Parse first, then set the field on the parsed object, which keeps
-        # every original field the consumer needs.
-        - bloblang: |
-            root = this.parse_json()
-            root.benthos_entry_ts = timestamp_unix_nano() / 1000000
+      processors: []
+      # INTENTIONALLY EMPTY -- the stage-attribution processor is unresolved.
+      #
+      # Four forms were tried against the live pipeline. Recorded here so the
+      # next attempt starts from evidence rather than from a guess:
+      #
+      #   root.benthos_entry_ts = <ms>
+      #     Result: PIPELINE BROKEN. stored=0, devices=0, 0% efficiency, every
+      #     pod Running, preflight green. Assigning to `root` here coerces the
+      #     message to a single field, so the consumer receives a payload with
+      #     no device_id and no ts. This is the original failure, reproduced.
+      #
+      #   root = this.parse_json()
+      #     Result: logs `expected string value, got object from field 'this'`
+      #     on every message. The pipeline still works (stored>0) because the
+      #     message passes through unmodified, but no field is added. So
+      #     `this` is *not* a string here, despite the error's wording.
+      #
+      #   root = this.parse_json().assign("k", v)
+      #     Rejected by `benthos lint`: assign takes ONE argument in 4.1.0.
+      #
+      #   `benthos test` unit tests
+      #     Pass on BOTH the working-elsewhere and the pipeline-breaking form,
+      #     because the unit-test root is an object rather than what the MQTT
+      #     input actually delivers. A green unit test proves nothing here.
+      #
+      # The contradiction -- `this` is not a string, yet assigning to root still
+      # collapses the message -- is not resolved. The error text and the
+      # observed behaviour disagree, and guessing has already cost two rounds.
+      # Next attempt should read what the MQTT input actually delivers (a
+      # `mapping: root = this` passthrough, or a Benthos `stdout`/`switch`
+      # harness pointed at the live config) before changing the processor again.
 
 
     output:

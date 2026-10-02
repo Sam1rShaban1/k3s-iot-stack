@@ -736,6 +736,16 @@ def check_policy_selectors_resolve(result: PreflightResult) -> None:
                 return False
         return True
 
+    code, out, err = _kubectl(["get", "pods", "-A", "-o", "json"])
+    pods: list[tuple[str, dict]] = []
+    if code == 0:
+        try:
+            for pod in json.loads(out).get("items", []):
+                pods.append((pod["metadata"].get("namespace", ""),
+                             pod["metadata"].get("labels") or {}))
+        except Exception:  # noqa: BLE001
+            pods = []
+
     inert: list[str] = []
     total = 0
     for policy in policies:
@@ -752,15 +762,33 @@ def check_policy_selectors_resolve(result: PreflightResult) -> None:
                 if not sel:
                     continue
                 if not any(matches(sel, labels) for _, labels in labelled):
-                    inert.append(f"{ns}/{name} {json.dumps(sel.get('matchLabels') or sel)}")
+                    inert.append(f"{ns}/{name} rule namespaceSelector "
+                                 f"{json.dumps(sel.get('matchLabels') or sel)} "
+                                 f"selects no namespace")
+
+        # A podSelector that matches nothing makes the whole policy inert. This
+        # is the same failure as an unresolvable namespaceSelector and it is
+        # worse, because it hides in both directions: an ingress policy that
+        # selects no pod silently permits everything, while the author believes
+        # it is restricting traffic. Found live on the emqx policy, where Git
+        # declared podSelector: {} (all pods) but the cluster carried
+        # matchLabels {app.kubernetes.io/name: emqx} -- a label the EMQX chart
+        # does not put on its pods (it uses app: emqx).
+        psel = (policy.get("spec") or {}).get("podSelector") or {}
+        if pods and psel:
+            if not any(ns == (policy["metadata"].get("namespace")) and matches(psel, labels)
+                       for ns, labels in pods):
+                inert.append(f"{ns}/{name} podSelector "
+                             f"{json.dumps(psel.get('matchLabels') or psel)} "
+                             f"selects no pod in its namespace")
 
     if inert:
         result.add(
             Check(
                 "policy-selectors-resolve",
                 False,
-                f"{len(inert)} of {total} namespaceSelector rules select no "
-                f"namespace and so permit nothing: {'; '.join(inert)}. Namespaces "
+                f"{len(inert)} inert selector(s) out of {total} checked "
+                f"namespaceSelector rules: {'; '.join(inert)}. Namespaces "
                 "created by Kubernetes carry `kubernetes.io/metadata.name`, not "
                 "`name`, so a selector on the latter is silently inert.",
             )

@@ -249,10 +249,17 @@ metadata:
   name: benthos-network-policy
   namespace: benthos
 spec:
-  # BUG 4 fix: single label. Deployed Benthos has app.kubernetes.io/name only.
+  # `app: benthos`, which is the label the deployed pod actually carries:
+  #   {"app":"benthos","pod-template-hash":"56b4c7f975"}
+  #
+  # It previously said `app.kubernetes.io/name: benthos` on the stated grounds
+  # that "the deployed Benthos carries app.kubernetes.io/name only". That is
+  # false -- the pod carries no app.kubernetes.io/name at all -- so the policy
+  # still selected nothing and the benthos namespace had no network isolation.
+  # The comment made the bug look fixed.
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: benthos
+      app: benthos
   policyTypes:
     - Ingress
     - Egress
@@ -284,6 +291,52 @@ spec:
       ports:
         - protocol: TCP
           port: 4222
+    # ...and to the NATS Service ClusterIP. The output URL is hardcoded to
+    # nats://10.43.203.115:4222, and Calico evaluates egress against the
+    # pre-DNAT destination. A ClusterIP is not a pod IP, so it matches no
+    # namespaceSelector and the rule above never applied. Same post-DNAT trap as
+    # the API-server egress below, one layer over.
+    - to:
+        - ipBlock:
+            cidr: 10.43.0.0/16
+      ports:
+        - protocol: TCP
+          port: 4222
+    # DNS to CoreDNS in kube-system. The existing rule is a BARE podSelector,
+    # which selects CoreDNS pods in the BENTHOS namespace -- where there are
+    # none. Name resolution for emqx.emqx.svc.cluster.local and
+    # nats.nats.svc.cluster.local therefore fails under enforcement.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Benthos -> EMQX on 1883. This is the ingest hop the whole pipeline starts
+    # from, and it was MISSING. The comment further up says "FIX: 1883" and the
+    # 1883 rule was never actually written -- only the ingress side mentions it.
+    #
+    # Nothing caught this for months because the policy selected no pods, so it
+    # was never enforced. The moment the selector was corrected to `app: benthos`
+    # the rule began applying and the pipeline went to stored=0, devices=0 --
+    # while all 15 preflight checks still passed.
+    #
+    # kubernetes.io/metadata.name rather than `name`: the latter is a convention
+    # this project applied to its own namespaces and is absent on ones
+    # Kubernetes creates. That distinction has already cost one silent outage.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: emqx
+      ports:
+        - protocol: TCP
+          port: 1883
     # Kubernetes API server.
     #
     # Getting this right took two wrong attempts, both of which looked

@@ -1575,3 +1575,124 @@ it when `benthos_entry_ts` is present (`consumer.py:152-153`), but the consumer
 pods show `restart=0` and may still be running a pre-field build. Next step is
 to roll the consumer and confirm the derived series appears. Until then the
 suspect remains "EMQX or Benthos", not narrowed to one.
+
+### D24 outcome: unresolved, and one of my corrections was wrong
+
+This is recorded at length because the process was as informative as the
+result, and because I retracted a correct diagnosis before reproducing it.
+
+Four forms were tried against the **live** pipeline:
+
+| form | result |
+|---|---|
+| `root.benthos_entry_ts = <ms>` | **Pipeline broken.** `stored=0`, `devices=0`, 0% efficiency, every pod Running, preflight green. |
+| `root = this.parse_json()` | Logs `expected string value, got object from field this` on every message; pipeline still healthy (message passes through unmodified), but no field added. |
+| `root = this.parse_json().assign("k", v)` | Rejected by `benthos lint` — `assign` takes one argument in 4.1.0. |
+| `benthos test` unit tests | Pass on **both** the first and second forms. |
+
+**I retracted the original diagnosis and was wrong to.** The standing comment
+claimed the MQTT root is raw payload bytes. The logs seemed to contradict that —
+`got object from field this` reads as `this` being an object, not bytes — so I
+declared the comment wrong, switched to the bare `root.benthos_entry_ts = ...`
+form, and reproduced the original failure exactly: `stored=0`, `devices=0`.
+
+So the error text and the observed behaviour genuinely disagree. `this` is not a
+string, yet assigning to `root` still collapses the message to a single field.
+That contradiction is not resolved, and the pipeline is back to
+`processors: []` — verified healthy at 95.72%.
+
+The lesson is about method rather than Benthos: I twice changed a live
+production path on the strength of an inference, and twice the cheap
+verification existed — reproduce the failure, or read the input type — and would
+have settled it. `benthos lint` caught form three for free. Nothing was
+available for free on forms one and two except actually running them, which
+takes about a minute.
+
+Also worth recording: applying the ConfigMap does not restart Benthos. It does
+not watch its config without `-w`, and it is a Deployment, so `kubectl rollout
+status ds/benthos` fails `NotFound` while the pipeline looks perfectly healthy
+on the old config. Any future change to `benthos.yaml` needs an explicit pod
+delete, which is an easy thing to forget and gives no signal when you do.
+
+**Still open, unchanged:** the 97%-of-p99 ingest tail is not yet split between
+EMQX and Benthos. `stage_latency.py` remains accurate for the coarse split
+(ingest vs storage) and is what the paper should cite.
+
+---
+
+## D25 — Three inert NetworkPolicies, and I broke the pipeline fixing them
+
+Detector 12 was extended to resolve `podSelector` as well as
+`namespaceSelector`, and immediately found three policies that selected nothing:
+
+| policy | declared selector | pods actually carry |
+|---|---|---|
+| `benthos/benthos-network-policy` | `app.kubernetes.io/name: benthos` | `app: benthos` |
+| `emqx/emqx-network-policy` | live had `app.kubernetes.io/name: emqx` | `app: emqx` |
+| `victoriametrics/...` | live had `app.kubernetes.io/name: victoria-metrics-single` | `app: victoriametrics` |
+
+A policy whose podSelector matches nothing is **inert in both directions**: it
+permits everything while its author believes it restricts traffic. Those three
+namespaces have had no network isolation at all.
+
+The benthos one was a repeat. A previous fix had removed `app: benthos` on the
+stated grounds that "the deployed Benthos carries app.kubernetes.io/name only" —
+which is false. It read as fixed because `kubectl apply` said *unchanged* and the
+object looked plausible.
+
+Turning enforcement on is what broke the pipeline. With the benthos selector
+corrected, the data path went to `stored=0, devices=0` **while all 15 preflight
+checks still passed** — these policies had never been enforced, so they had
+never been tested. Two further defects surfaced only once enforced:
+
+- **No egress rule for Benthos → EMQX on 1883.** The file comment says "FIX:
+  1883"; the rule was never written. Only the ingress side mentions 1883.
+- **Egress to the NATS ClusterIP was unreachable.** The output URL is hardcoded
+  to `nats://10.43.203.115:4222`, and Calico evaluates egress against the
+  pre-DNAT destination. A ClusterIP is not a pod IP, so it matches no
+  namespaceSelector. Same post-DNAT trap as the API-server egress in BUG 6, one
+  layer over.
+- **DNS was a bare podSelector**, selecting CoreDNS in the benthos namespace,
+  where none exists.
+
+### Current state: the pipeline is DOWN
+
+`stored=0`. Benthos logs `Failed to connect to nats: no servers available`.
+**I did not manage to restore it and I ran out of context before diagnosing it
+properly.** What is known:
+
+- It is **not** the benthos policy — that was deleted, and it still fails.
+- It is **not** the nats policy — that was deleted, and it still fails.
+- DNS from a pod in the benthos namespace resolves `nats.nats.svc.cluster.local`
+  to `10.43.203.115` correctly, and that is still the Service ClusterIP.
+- `nats-0` is Running with 3d19h uptime.
+
+So the failure is downstream of NetworkPolicy and DNS. **Next thing to check is
+NATS itself** — whether it is still accepting client connections on 4222 at
+all, and whether `nats-0` is listening where the ClusterIP points.
+
+### Live drift introduced
+
+`benthos-network-policy` and `nats-network-policy` were **deleted live** during
+the attempt to isolate the cause. Git still declares both. They should be
+restored with:
+
+    kubectl apply -f manifests/namespaces/network-policies.yaml
+
+— but note the benthos one now has the corrected `app: benthos` selector, so it
+**will** be enforced, and the two egress gaps above must be closed first or the
+pipeline will break again.
+
+### The lesson
+
+This is the third instance of one pattern, and it is now expensive enough to be
+worth naming plainly. **A check that reports "green" is not the same as a check
+that would have noticed.** Fifteen preflight checks passed while the data path
+was completely dead. The inert policies were invisible for months precisely
+because they were never enforced, so their contents were never exercised — and
+the fix that made them visible also activated months of untested configuration
+at once.
+
+The cheap discipline that would have caught this: after enabling any inert
+policy, verify the *data path* end to end before treating it as a win, and never
+bundle an enforcement change with a correctness change to the same object.
