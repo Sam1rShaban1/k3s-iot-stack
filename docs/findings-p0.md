@@ -1505,3 +1505,73 @@ The 3446 restarts on `metallb-speaker-r5rdc` are historical, not current:
 the logs are dated 2026-06-30 and are all `dial tcp 10.43.0.1:443: network is
 unreachable`, i.e. a node that had lost contact with the API service IP. All
 five speakers are Running now.
+
+---
+
+## D24 — Stage attribution: bench-testing the Benthos processor
+
+The `benthos_entry_ts` processor that would split the ingest tail had been
+attempted once and silently destroyed the pipeline. Two forms were wrong, and
+the second was wrong in a way that would have shipped:
+
+| form | result |
+|---|---|
+| `root.benthos_entry_ts = ...` | MQTT root is **raw bytes**, not an object. Coerced the message to a single field; consumer saw no `device_id`/`ts`; scenario reported `stored=0` at 0% efficiency with every pod Running and preflight green. |
+| `root = this.parse_json().assign("k", v)` | `assign` in Benthos **4.1.0 takes one argument**, not a path and a value. `benthos lint` rejects it: *"wrong number of arguments, expected 1, got 2"*. |
+
+The second form is what the code comment proposed as "the correct form". It was
+never correct for this Benthos version — it would have been caught by `lint`
+before it reached the cluster, had anyone run it. The working form parses first
+and then sets the field on the parsed object:
+
+```bloblang
+root = this.parse_json()
+root.benthos_entry_ts = timestamp_unix_nano() / 1000000
+```
+
+### The unit test is not a faithful substitute
+
+`benthos test` exists and accepts a config with `tests:`, and it passes on the
+working form. It also **passes on the broken form**, because in the unit-test
+context the root is an object rather than bytes. So a green unit test would not
+have distinguished the two — the failure is specific to the MQTT input's root
+type.
+
+Consequence: the live check is the real one. The symptom to watch is exactly
+the one that caught the original — `stored=0`, `devices=0`, everything else
+green.
+
+### Verified
+
+`benthos lint` clean on the extracted live config. Applied to the cluster, all
+five Benthos pods restarted, and the pipeline stayed healthy:
+98.84% efficiency, 20 devices, 24710 messages stored.
+
+Note that applying the ConfigMap did **not** restart the pods — Benthos does not
+watch the config unless started with `-w`, and Benthos here is a Deployment, not
+the DaemonSet the first `kubectl rollout status` assumed (it failed with
+`NotFound`). The pods were still running the old config while the pipeline
+looked perfectly healthy. The field only began flowing after an explicit pod
+delete. This is the same class of bug as the ConfigMap drift in D21: the live
+workload and the declared config silently disagreeing, with every health signal
+green.
+
+### Latency at 100 clients / 2000 msg/s
+
+```
+  stage                                     p50      p90       p99       max
+  publisher -> EMQX -> Benthos -> NATS      341     1427      3861      4502
+  consumer -> VictoriaMetrics               26       54        55        55
+  end to end                               766     1471      4393      4473
+```
+
+Still **97% of p99 inside the ingest path**, with the storage side at 55 ms. So
+the D20 conclusion is now confirmed on clean state with a substantially better
+operating point than when it was first measured.
+
+**Not yet closed:** `benthos_to_nats_latency_ms` returns zero series, so the
+intra-ingest split itself is still not visible. The consumer already computes
+it when `benthos_entry_ts` is present (`consumer.py:152-153`), but the consumer
+pods show `restart=0` and may still be running a pre-field build. Next step is
+to roll the consumer and confirm the derived series appears. Until then the
+suspect remains "EMQX or Benthos", not narrowed to one.

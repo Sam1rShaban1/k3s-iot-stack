@@ -34,7 +34,30 @@ data:
     # work; the stage attribution it was for is answered well enough without it
     # (see docs/findings-p0.md D20).
     pipeline:
-      processors: []
+      processors:
+        # Stage attribution for the ingest tail. BENCH-TESTED, then verified live.
+        #
+        # Two earlier forms were wrong and both are worth remembering:
+        #
+        # 1. `root.benthos_entry_ts = ...` -- the MQTT input's root is the RAW
+        #    PAYLOAD BYTES, not a parsed object. This coerced the message into an
+        #    object holding only that one field; the consumer then got a payload
+        #    with no device_id and no ts, emitted one series, and the scenario
+        #    reported stored=0 at 0% efficiency with every pod Running and
+        #    preflight green. In a `benthos test` unit-test context this form
+        #    appears to WORK, because there the root is an object rather than
+        #    bytes -- so the unit test is not a faithful substitute for a live
+        #    check, which is why the live verification below is the real one.
+        #
+        # 2. `root = this.parse_json().assign("k", v)` -- `assign` in Benthos
+        #    4.1.0 takes ONE argument, not a path and a value. `benthos lint`
+        #    rejects it: "wrong number of arguments, expected 1, got 2".
+        #
+        # Parse first, then set the field on the parsed object, which keeps
+        # every original field the consumer needs.
+        - bloblang: |
+            root = this.parse_json()
+            root.benthos_entry_ts = timestamp_unix_nano() / 1000000
 
 
     output:
