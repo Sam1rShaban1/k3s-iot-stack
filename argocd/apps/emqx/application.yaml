@@ -35,6 +35,24 @@ spec:
         service:
           type: LoadBalancer
           loadBalancerIP: 192.168.1.241
+          annotations:
+            # K3s ships a built-in LoadBalancer controller (klipper-lb, the
+            # rancher svclb-* DaemonSet) AND this cluster also runs MetalLB.
+            # Both watch LoadBalancer Services, and they fought over this one:
+            # the events show the Service oscillating between MetalLB's
+            # 192.168.1.240 and klipper-lb's node IPs (10.0.0.2-5), with
+            # "invalid ips length 3" and "not allowed by config" throughout.
+            #
+            # MetalLB is kept, for the reason the rest of this repo depends on:
+            # an explicit address pool, L2Advertisement control, and visible
+            # allocation. klipper-lb only hands out node IPs, which offers no
+            # control and no way to see what it decided.
+            #
+            # This annotation disables only the K3s controller, per Service.
+            # Disabling servicelb cluster-wide (k3s config `disable:
+            # - servicelb`) is the better fix and is blocked on SSH to all five
+            # nodes; see docs/findings-p0.md.
+            svccontroller.k3s.cattle.io/enablelb: "false"
           ports:
             mqtt: 1883
             mqtts: 8883

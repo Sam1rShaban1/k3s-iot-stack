@@ -16,15 +16,28 @@ metadata:
 spec:
   ipAddressPools:
   - default-pool
-  # No `interfaces:` restriction on purpose.
+  # `wlan0`, not `eth0` and not unrestricted.
   #
-  # This listed `eth0`, but the pool is 192.168.1.240-250 and eth0 is the
-  # 10.0.0.0/24 segment. The nodes reach the home LAN on wlan0, so the speaker
-  # was announcing an address from one network onto another -- ARP replies that
-  # no client on 192.168.1.0/24 would ever accept.
+  # eth0 was the original value, but eth0 is the 10.0.0.0/24 fabric and the pool
+  # is 192.168.1.240-250, so the speaker was advertising a home-LAN address onto
+  # the fabric network.
   #
-  # Interface naming is also not uniform here: the speaker runs on every node,
-  # and which interface fronts the LAN differs per node. Pinning a name that is
-  # only correct on some of them is how this broke. Letting MetalLB announce on
-  # every interface makes the advertisement follow the address instead of
-  # assuming where it lives.
+  # Removing the restriction entirely was also wrong, and measurably so: with
+  # the list empty MetalLB announces on *every* interface, including `cni0` and
+  # `flannel.1`. The VIP's ARP became intermittent and clients failed with
+  # "No route to host" while a TCP probe taken seconds earlier had succeeded.
+  # Announcing a LAN address on the CNI bridges is at best pointless and at
+  # worst conflicts with the flannel fabric.
+  #
+  # wlan0 is the uniform LAN-facing interface. Verified per node rather than
+  # assumed, from inside each host's network namespace:
+  #
+  #   raspberrypi  eth0 10.0.0.1/24   wlan0 192.168.1.50/24
+  #   pi7          eth0 10.0.0.2/24   wlan0 192.168.1.162/24
+  #   pi2          eth0 10.0.0.3/8    wlan0 192.168.1.189/24
+  #
+  # (pi2 is the odd one: a /8 on eth0 and a default route via 10.0.0.0, which is
+  # its own network address and therefore not a usable gateway. See
+  # docs/findings-p0.md.)
+  interfaces:
+  - wlan0
