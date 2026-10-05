@@ -306,11 +306,17 @@ spec:
     # which selects CoreDNS pods in the BENTHOS namespace -- where there are
     # none. Name resolution for emqx.emqx.svc.cluster.local and
     # nats.nats.svc.cluster.local therefore fails under enforcement.
+    # ONE peer carrying both fields. Two separate peers would be OR, so the
+    # bare-podSelector peer would match CoreDNS in THIS namespace (where there
+    # is none) and the namespaceSelector peer would permit every pod in
+    # kube-system rather than just CoreDNS. It would appear to work, and be
+    # far wider than intended. namespaceSelector + podSelector in one peer is
+    # the AND form, which is what "CoreDNS, and only CoreDNS" means.
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
-        - podSelector:
+          podSelector:
             matchLabels:
               k8s-app: kube-dns
       ports:
@@ -373,16 +379,6 @@ spec:
           port: 443
         - protocol: TCP
           port: 6443
-    - to:
-        - namespaceSelector: {}
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -479,6 +475,24 @@ spec:
         - namespaceSelector:
             matchLabels:
               name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8428
+    # The benchmark harness runs on a laptop OUTSIDE the cluster and reads
+    # results over the NodePort (harness/config.py vm_url). Nothing above
+    # covers that, and it only became visible when this policy stopped being
+    # inert: with the selector matching no pod the whole policy was bypassed, so
+    # the laptop's reads were permitted by accident. Enforcing it turned
+    # `stored=0` on every run, while the consumer wrote happily to the ClusterIP
+    # and preflight stayed green.
+    #
+    # Same shape as the emqx BUG 5 fix: the measurement apparatus lives outside
+    # the cluster, not inside a labelled namespace.
+    - from:
+        - ipBlock:
+            cidr: 192.168.1.0/24
+        - ipBlock:
+            cidr: 10.0.0.0/8
       ports:
         - protocol: TCP
           port: 8428

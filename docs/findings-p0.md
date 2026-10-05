@@ -1696,3 +1696,81 @@ at once.
 The cheap discipline that would have caught this: after enabling any inert
 policy, verify the *data path* end to end before treating it as a win, and never
 bundle an enforcement change with a correctness change to the same object.
+
+---
+
+## D26 — The policies were never enforced, and ArgoCD was hiding it
+
+Resolution of D25. The pipeline is back (95.28%, 15/15 preflight) with **all six
+NetworkPolicies genuinely enforced for the first time in the project's life**.
+
+### What actually caused the outage
+
+Not NATS. Three separate things, found in this order:
+
+**1. ArgoCD reverts live changes because it syncs from the *remote* Git, and
+nothing had been pushed.** The remote was still at `b12be68` while local was 11
+commits ahead. ArgoCD's repo-server reads GitHub, so every manual `kubectl apply`
+this session — the corrected NetPols, the corrected Benthos config, the D23
+emqx/MetalLB work — was faithfully reverted. That is why the live Benthos ConfigMap
+kept showing `sensors/#` with `max_in_flight: 100` after I had "applied" the fixed
+version. It looked like drift; it was ArgoCD doing exactly its job against a stale
+remote.
+
+The remote is SSH (`git@github.com`) and the local key is not registered, so
+pushes failed. `gh auth setup-git` plus an explicit HTTPS push fixed it:
+`b12be68..6af607c`, all 11 commits.
+
+**2. `kubectl apply` merges `matchLabels` instead of replacing them.** Correcting
+the benthos selector to `app: benthos` produced
+`{app: benthos, app.kubernetes.io/name: benthos}` — which matches nothing, the
+AND-semantics bug the file's own comment describes. Three-way merge adds keys; it
+does not remove them. Needed an explicit JSON-patch `remove`.
+
+**3. The node LAN IPs moved.** `raspberrypi`'s wlan0 is now `192.168.1.162`
+(dynamic), and the broker resolved to `192.168.1.136`. Everything hardcoded to
+`192.168.1.50` was stale. The probe-based broker discovery absorbed this; my
+hardcoded `HARNESS_BROKER=192.168.1.241` did not, and I spent several runs
+publishing into a dead VIP before noticing I was forcing the variable myself.
+
+### The two rules that were actually missing
+
+Once the policies were truly enforced, two real gaps appeared — neither had ever
+been exercised:
+
+- **Benthos → EMQX on 1883 had no egress rule.** The comment said "FIX: 1883"; the
+  rule was never written.
+- **VictoriaMetrics had no LAN ingress.** The benchmark harness runs on a laptop
+  *outside* the cluster and reads results over the NodePort. With the policy inert
+  that worked by accident. Enforcing it produced `stored=0` on every run while the
+  consumer wrote happily to the ClusterIP and all 15 preflight checks stayed green
+  — the measurement apparatus, not the pipeline, was severed.
+
+Also fixed: the DNS rule I added used two separate `to:` peers, which is **OR**.
+The bare-podSelector peer matched CoreDNS in the benthos namespace (none there) and
+the namespaceSelector peer permitted *every* pod in kube-system. It worked and was
+far wider than intended. One peer carrying both `namespaceSelector` and
+`podSelector` is the AND form that "CoreDNS, and only CoreDNS" means.
+
+And a self-inflicted one: I pushed `busybox:1.36` to the mirror from an amd64
+Docker without running the platform check I had run for every other image. Nodes
+served `exec format error` until I re-pushed via `crane pull --platform
+linux/arm64`, which bypasses the local daemon entirely and is the better path.
+`files/check_image_platform.py` exists precisely for this and I skipped it.
+
+### The lesson, stated once
+
+Four separate times in this session I concluded something was fixed or broken and
+was wrong, every time because I trusted a status line instead of a data path:
+
+| believed | actually |
+|---|---|
+| Benthos ConfigMap applied | ArgoCD reverted it (stale remote) |
+| `kubectl apply` set the selector | merge added a key, still matched nothing |
+| NATS was refusing connections | NATS was fine; the *harness read* path was severed |
+| `stored=0` meant the pipeline was dead | pipeline fine, VM reads blocked by a newly-enforced policy |
+
+`stored=0` is ambiguous — it means "no samples were read back", which conflates
+"nothing was produced" with "nothing could be read". Splitting those into separate
+failures would have shortened this entire investigation. That is a change to
+`harness/run.py` and it is the obvious next one.
