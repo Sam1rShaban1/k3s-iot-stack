@@ -1774,3 +1774,76 @@ was wrong, every time because I trusted a status line instead of a data path:
 "nothing was produced" with "nothing could be read". Splitting those into separate
 failures would have shortened this entire investigation. That is a change to
 `harness/run.py` and it is the obvious next one.
+
+---
+
+## D27 — Client ceiling measured, and a flaw in the efficiency denominator
+
+Before quoting any 5k or 10k msg/s number, the load generator's own ceiling had
+to be established. This is the check whose absence produced the fake "QoS
+serialization ceiling" in paper §V-C — a client-side artifact recorded as a
+system limit. It should not be optional.
+
+### The publisher's ceiling
+
+Single process, free-running (no delay), against EMQX over the LAN:
+
+    achieved = 25,830 / 25,375 / 26,673 msg/s   (delay 10000 / 5000 / 2500 us)
+
+So one publisher process saturates at roughly **26k msg/s**. 10k aggregate is
+comfortably inside client capability — the client will not be the bottleneck at
+the rates proposed.
+
+### The delay mechanism works, with a caveat that matters
+
+My first attempt passed `dev100` where `delay-us` belongs, so `atoi` returned 0
+and the publisher free-ran. That looked like a load-generator bug and was my own
+argument-order error. With correct ordering:
+
+| per-device target | achieved | accuracy |
+|---|---|---|
+| 20 msg/s | 19.96 | 99.80% |
+| 50 msg/s | 49.78 | 99.56% |
+| 100 msg/s | 99.17 | 99.17% |
+| 200 msg/s | 196.79 | 98.40% |
+
+**The generator falls short, and the shortfall grows with per-device rate.**
+
+### The flaw this exposes
+
+`harness/report.py:186`:
+
+    efficiency = (throughput / target_rate * 100.0)
+
+`target_rate` is the **nominal** requested rate. The publisher already reports
+what it actually achieved, and the harness never parses it. So every microsecond
+the generator falls short is charged to the pipeline as packet loss, and reported
+efficiency is capped by generator accuracy, not by the system under test.
+
+Consequences for the proposed runs:
+
+| scenario | per-device | ceiling on reported efficiency |
+|---|---|---|
+| 100c @ 5000/s | 50/s | 99.56% |
+| 100c @ 10000/s | 100/s | 99.17% |
+
+At 10k the reported figure could not distinguish a 99.2% pipeline from a 99.17%
+generator artifact. That is not a usable measurement.
+
+It also slightly taints existing results. The corrected matrices used 100c @
+2000r, i.e. 20/s per device, ceiling 99.80%, against a measured mean of 98.43% —
+so roughly 1.4 points of genuine loss with under 0.2 points of generator error.
+The QoS conclusion (−0.66 points) is larger than that error but not enormously
+so, and should be re-checked once the denominator is fixed.
+
+### Two fixes, both worth doing
+
+1. **Use the achieved rate as the denominator.** The publisher reports it; parse
+   it. This is the principled fix and it makes every future number honest.
+2. **Hold per-device rate low by adding clients.** 10k/s across 500 clients at
+   20/s each returns the ceiling to 99.80%. Needs a check that the harness can
+   supervise 500 processes.
+
+Fix 1 is a change to `harness/runner.py` and `harness/report.py`. Until it lands,
+any rate above ~2000 msg/s should be reported as "throughput and drop rate
+against a nominal target, generator accurate to X%", not as efficiency.
