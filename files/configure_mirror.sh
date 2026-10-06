@@ -37,7 +37,18 @@
 set -euo pipefail
 
 NAMESPACE="${SIDELOAD_NAMESPACE:-kube-system}"
-MIRROR="${SIDELOAD_MIRROR:-192.168.1.50:30500}"
+# The registry lives on the control-plane node. Address it by its STATIC fabric
+# address, not its LAN address.
+#
+# 192.168.1.50 was a DHCP lease on the home WLAN and it moved. When it did, every
+# node in the cluster silently lost its mirror -- which showed up as
+# ImagePullBackOff on any pod that needed an image not already cached, on
+# whichever node it happened to land. 10.0.0.1 is the address configured in
+# ansible/inventory.ini, does not move, and is reachable from every node.
+#
+# Overridable for a genuinely air-gapped site, where the registry will be on a
+# fixed address of its own.
+MIRROR="${SIDELOAD_MIRROR:-10.0.0.1:30500}"
 HELPER_IMAGE="${SIDELOAD_DEBUG_IMAGE:-jeffail/benthos:4.1.0}"
 REGISTRIES_PATH=/etc/rancher/k3s/registries.yaml
 

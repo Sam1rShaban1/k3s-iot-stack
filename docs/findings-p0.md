@@ -1957,3 +1957,69 @@ because most messages were dropped rather than delayed, which is the expected
 shape when a path fails by discarding instead of queueing. Latency percentiles
 are only meaningful while delivery is near 100%, and should always be reported
 next to the delivery ratio rather than on their own.
+
+---
+
+## D29 — One stale DHCP address had broken three separate things
+
+Reconnected after a network change and found the cluster had come back
+**regressed**: all six NetworkPolicies back to their pre-D26 state, Benthos down
+to **1 replica** with the fixed `client_id: benthos-consumer` instead of
+`benthos-consumer-${HOSTNAME}`, and all nine ArgoCD Applications reporting
+`Unknown`.
+
+### One cause, three symptoms
+
+Every node's `/etc/rancher/k3s/registries.yaml` pointed its registry mirror at
+`http://192.168.1.50:30500` — a **DHCP lease on the home WLAN**, and the lease
+had moved. Verified from inside pi2:
+
+    10.0.0.1:30500       OPEN          <- static fabric address
+    192.168.1.50:30500    unreachable   <- the DHCP lease, now gone
+
+So the causal chain was:
+
+1. Mirror endpoint unreachable -> pods needing an uncached image fail with
+   `ImagePullBackOff` on whichever node they landed. ArgoCD's repo-server was
+   one, which is why every Application went `Unknown`.
+2. The pre-D26 NetworkPolicies had also reverted, and those **deny DNS egress**.
+   That is what killed the repo-server in the first place: it died with
+   `lookup github.com on 10.43.0.10:53: server misbehaving`, then
+   `Terminated/Completed`.
+3. With repo-server down, ArgoCD could not compare desired vs live, so it could
+   neither correct the drift nor report it. The stale state persisted.
+
+The kubeconfig was broken the same way, which is why `kubectl` failed first.
+
+### Fixes
+
+- `files/configure_mirror.sh` now defaults to `10.0.0.1:30500` — the static
+  address from `ansible/inventory.ini`, which does not move and is reachable
+  from every node. Overridable for a genuinely air-gapped site.
+- Rewrote all five nodes' `registries.yaml`, then rolled `k3s-agent` on pi2, pi3,
+  pi4, pi7 and `k3s` on the control plane **one node at a time**, verifying each
+  returned Ready. All 5 Ready, repo-server back to 1/1 Running.
+- Re-applied the six corrected NetworkPolicies after deleting them first, since
+  `kubectl apply` merges `matchLabels` and re-adds the stale key.
+
+Result: **15/15 preflight**, all 5 nodes Ready, no `ImagePullBackOff`.
+
+### Still wrong: CoreDNS has a stale search domain
+
+ArgoCD remains `Unknown` and the controller logs
+`lookup argocd-redis: i/o timeout`. CoreDNS logs show why:
+
+    [ERROR] plugin/errors: argocd-redis.argocd.svc.cluster.local.seeu.edu.mk. A:
+            read udp 10.42.2.38:37502->192.168.1.1:53: i/o timeout
+
+It is appending **`seeu.edu.mk`** to a fully-qualified cluster-internal name and
+forwarding it to the home router, which does not answer. Cluster-internal names
+must be answered by CoreDNS's own `kubernetes` plugin and never forwarded. The
+suffix is not something the home router supplies, so it is inherited from a node
+`resolv.conf` search list left over from an earlier environment.
+
+This is the same *class* of fault as the DHCP mirror — a cluster component
+reaching outward for something it should answer locally — but a different
+mechanism, and it needs the nodes' `resolv.conf` corrected. Until then ArgoCD
+cannot sync, so **Git remains the only source of truth and live drift will keep
+reappearing**.
