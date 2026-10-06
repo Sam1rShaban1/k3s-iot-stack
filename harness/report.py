@@ -166,6 +166,7 @@ def build_scenario_report(
     latency_metric: str,
     inter_arrival_samples: Optional[Sequence[Sample]] = None,
     test_duration_s: int = 60,
+    generator: Optional[dict] = None,
 ) -> dict:
     latencies = [s.value for s in latency_samples]
     n = len(latencies)
@@ -182,9 +183,60 @@ def build_scenario_report(
     throughput = n / duration_s if duration_s > 0 else 0.0
 
     unique_devices = len({s.device_id for s in latency_samples})
-    expected = target_rate * duration_s if target_rate else 0
-    efficiency = (throughput / target_rate * 100.0) if target_rate else 0.0
+
+    # The denominator must be what the load generator ACTUALLY produced, not
+    # what it was asked to produce.
+    #
+    # The publisher falls short of nominal, and the shortfall grows with
+    # per-device rate: measured on this build, 20/s -> 99.80%, 50/s -> 99.56%,
+    # 100/s -> 99.17%, 200/s -> 98.40%. Dividing by the nominal rate therefore
+    # caps reported efficiency at the generator's accuracy and charges the
+    # difference to the pipeline as loss. At 100c/10000rps that ceiling is
+    # 99.17%, which cannot distinguish a good cluster from a bad one.
+    #
+    # Falls back to the nominal rate only when the generator reported nothing
+    # (no parsable summary line), and says so in the report rather than
+    # silently reverting to a flattering-but-wrong denominator.
+    gen = generator or {}
+    achieved_rate = float(gen.get("achieved_msg_s") or 0.0)
+    gen_reported = int(gen.get("reported") or 0)
+    denominator = achieved_rate if achieved_rate > 0 else float(target_rate or 0)
+    basis = "generator_achieved" if achieved_rate > 0 else "nominal_target_fallback"
+
+    expected = denominator * duration_s if denominator else 0
+    efficiency = (throughput / denominator * 100.0) if denominator else 0.0
+    # Against nominal, for comparison. Kept because it is what the earlier
+    # corrected matrices reported and dropping it would make them unreadable.
+    nominal_efficiency = (
+        (throughput / target_rate * 100.0) if target_rate else 0.0
+    )
     drop_rate = max(0.0, 100.0 - efficiency)
+
+    # The honest loss metric, and the one that should be read first.
+    #
+    # `efficiency` compares observed throughput against a target rate, and
+    # observed throughput divides by the span of the VictoriaMetrics samples.
+    # That span includes the settle period and any write lag, so it is longer
+    # than the interval the generator actually published over -- and the ratio
+    # falls below 100% even when not a single message is lost.
+    #
+    # Observed on a clean 100c/2000rps run: the publisher reported
+    # published=89390 and VictoriaMetrics returned stored=89390. Identical. The
+    # pipeline dropped nothing, yet efficiency read 91.49%. The entire gap was
+    # the window, not loss.
+    #
+    # delivered/published compares counts, so it is immune to window
+    # definitions. It answers "did anything get lost", which is the question
+    # efficiency appears to answer but does not.
+    generator_published = int(gen.get("published") or 0)
+    delivery_ratio = (
+        (n / generator_published * 100.0) if generator_published > 0 else None
+    )
+
+    generator_accuracy = (
+        (achieved_rate / target_rate * 100.0)
+        if (target_rate and achieved_rate > 0) else None
+    )
 
     stats = latency_stats(latencies)
 
@@ -195,6 +247,10 @@ def build_scenario_report(
         "configuration": {
             "num_clients": clients,
             "total_rate_msg_s": target_rate,
+            "achieved_rate_msg_s": achieved_rate or None,
+            "generator_published": gen.get("published") or None,
+            "generator_processes_reporting": gen_reported or None,
+            "efficiency_basis": basis,
             "per_device_rate_msg_s": round(target_rate / clients, 2) if clients else 0,
             "test_duration_s": test_duration_s,
             "nodes": nodes,
@@ -207,6 +263,13 @@ def build_scenario_report(
             "duration_s": round(duration_s, 2),
             "throughput_msg_s": round(throughput, 2),
             "efficiency_pct": round(efficiency, 2),
+            "efficiency_pct_nominal_basis": round(nominal_efficiency, 2),
+            "delivery_ratio_pct": (
+                round(delivery_ratio, 2) if delivery_ratio is not None else None
+            ),
+            "generator_accuracy_pct": (
+                round(generator_accuracy, 2) if generator_accuracy is not None else None
+            ),
             "drop_rate_pct": round(drop_rate, 2),
             "latency": stats,
             "latency_metric": latency_metric,

@@ -33,6 +33,7 @@
 
 #include "MQTTClient.h"
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,6 +72,42 @@ static double mono_sec(void) {
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
   return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
+}
+
+/* Summary state at file scope, so the SIGTERM handler can reach it.
+ *
+ * The harness stops publishers with SIGTERM the moment the test window closes
+ * -- which is how it has always worked. Until now the process died on the
+ * default SIGTERM action, so the closing summary on the normal exit path never
+ * ran and the harness could not learn the achieved rate. It fell back to the
+ * nominal denominator silently, which is the failure this exists to prevent.
+ *
+ * Read once on the way out; a torn long in a once-per-shutdown summary is not
+ * a concern. */
+static volatile long g_published = 0;
+static volatile long g_reconnects = 0;
+static double g_start_s = 0.0;
+static int g_delay_us = 0;
+static char g_client_id[128] = "unknown";
+
+static void print_summary(void) {
+  double elapsed = mono_sec() - g_start_s;
+  double achieved = (elapsed > 0.0) ? (double)g_published / elapsed : 0.0;
+  printf("Client [%s] stopping after %.1fs: published=%ld achieved=%.2f msg/s "
+         "target=%.2f msg/s reconnects=%ld\n",
+         g_client_id, elapsed, (long)g_published, achieved,
+         g_delay_us > 0 ? 1000000.0 / (double)g_delay_us : 0.0,
+         (long)g_reconnects);
+  /* REQUIRED, not tidiness. stdout is block-buffered whenever it is not a tty,
+   * and under the harness it never is. Without this the summary is discarded on
+   * exit and the harness sees no achieved rate. */
+  fflush(stdout);
+}
+
+static void on_terminate(int sig) {
+  (void)sig;
+  print_summary();
+  _exit(0);
 }
 
 int main(int argc, char *argv[]) {
@@ -213,6 +250,16 @@ int main(int argc, char *argv[]) {
          duration_s > 0 ? ", bounded duration" : "");
 
   const double start_s = mono_sec();
+
+  /* Publish summary context before the loop so a SIGTERM at any point can
+   * still report which device and target it was. */
+  g_start_s = start_s;
+  g_delay_us = delay_us;
+  snprintf(g_client_id, sizeof(g_client_id), "%s", final_client_id);
+  g_published = 0;
+  g_reconnects = 0;
+  signal(SIGTERM, on_terminate);
+  signal(SIGINT, on_terminate);
   long published = 0;
   long reconnects = 0;
 
@@ -257,6 +304,7 @@ int main(int argc, char *argv[]) {
       fprintf(stderr, "Failed to publish message, return code %d\n", rc);
       if (rc == MQTTCLIENT_DISCONNECTED) {
         reconnects++;
+        g_reconnects = reconnects;
         fprintf(stderr, "disconnected; reconnecting (#%ld)\n", reconnects);
         if (MQTTClient_connect(client, &conn_opts) != MQTTCLIENT_SUCCESS) {
           fprintf(stderr, "reconnect failed; aborting\n");
@@ -265,6 +313,7 @@ int main(int argc, char *argv[]) {
       }
     } else {
       published++;
+      g_published = published;
     }
 
     /* No network pump here, deliberately.
@@ -303,12 +352,9 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  double elapsed = mono_sec() - start_s;
-  double achieved = elapsed > 0 ? (double)published / elapsed : 0.0;
-  printf("Client [%s] stopping after %.1fs: published=%ld achieved=%.2f msg/s "
-         "target=%.2f msg/s reconnects=%ld\n",
-         final_client_id, elapsed, published, achieved,
-         delay_us > 0 ? 1000000.0 / (double)delay_us : 0.0, reconnects);
+  g_published = published;
+  g_reconnects = reconnects;
+  print_summary();
 
   MQTTClient_disconnect(client, 10000);
   MQTTClient_destroy(&client);

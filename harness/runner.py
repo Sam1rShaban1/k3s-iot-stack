@@ -95,30 +95,94 @@ def spawn_publishers(
             "--qos", str(qos),
             "--duration", str(duration_s),
         ]
+        # stdout carries the closing summary line
+        #   "... stopping after Ns: published=... achieved=... msg/s target=..."
+        # It was sent to DEVNULL, so the harness could never learn what the
+        # generator actually produced -- only what it was asked to produce.
+        # That is why report.py divides by the NOMINAL rate. Both streams are
+        # now captured; the publisher writes two lines to stdout, so the pipe
+        # cannot fill.
         procs.append(
-            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         )
     return procs
 
 
-def stop_publishers(procs: list[subprocess.Popen]) -> None:
+_ACHIEVED_RE = re.compile(r"achieved=([0-9.]+)\s*msg/s")
+_PUBLISHED_RE = re.compile(r"published=(\d+)")
+
+
+def stop_publishers(procs: list[subprocess.Popen]) -> dict:
+    """Stop the publishers and return what they actually produced.
+
+    Returns {"achieved_msg_s": float, "published": int, "reported": int, where
+    `reported` is how many processes produced a parseable summary line.
+
+    Dividing by the requested rate instead of the achieved one charges every
+    microsecond the generator fell short to the pipeline as packet loss. The
+    shortfall is not small and it is not constant -- measured on this build, a
+    per-device target of 20/s yields 99.80% of nominal, 50/s yields 99.56%,
+    100/s yields 99.17% and 200/s yields 98.40% -- so it would cap reported
+    efficiency at 99.17% for a 100c/10000rps scenario regardless of how good
+    the cluster actually was.
+    """
+    # Signal every process FIRST, then reap. The previous code signalled and
+    # immediately waited on each one in turn against a single shared 5s budget,
+    # so with 100 publishers the first straggler consumed the budget and the
+    # remaining 99 were SIGKILLed -- before reaching the SIGTERM handler that
+    # prints the achieved-rate summary. The harness then parsed nothing and
+    # silently fell back to the nominal denominator, which is the exact failure
+    # this function exists to prevent.
     for p in procs:
         if p.poll() is None:
-            p.send_signal(signal.SIGTERM)
-    deadline = time.time() + 5
+            try:
+                p.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+    deadline = time.time() + 30
     for p in procs:
+        if p.poll() is not None:
+            continue
         remaining = max(0.1, deadline - time.time())
         try:
             p.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
-            p.kill()
-    # Drain stderr so writers do not block on a full pipe.
-    for p in procs:
-        if p.stderr:
             try:
-                p.stderr.read()
+                p.kill()
+            except ProcessLookupError:
+                pass
+
+    achieved = 0.0
+    published = 0
+    reported = 0
+    for p in procs:
+        out = b""
+        # Drain both pipes so no writer is left blocked on a full buffer.
+        for stream in (p.stdout, p.stderr):
+            if stream is None:
+                continue
+            try:
+                out += stream.read() or b""
             except Exception:
                 pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+        text = out.decode("utf-8", "replace")
+        m = _ACHIEVED_RE.search(text)
+        if m:
+            achieved += float(m.group(1))
+            reported += 1
+        q = _PUBLISHED_RE.search(text)
+        if q:
+            published += int(q.group(1))
+    return {
+        "achieved_msg_s": round(achieved, 2),
+        "published": published,
+        "reported": reported,
+    }
 
 
 def collect_scenario(
@@ -285,7 +349,7 @@ def run(
             conf.test_duration_s,
         )
         time.sleep(conf.test_duration_s)
-        stop_publishers(procs)
+        gen = stop_publishers(procs)
         print("  publishers stopped, settling 15s")
         time.sleep(15)
         window_end = time.time()
@@ -318,6 +382,7 @@ def run(
             latency_metric=latency_metric,
             inter_arrival_samples=inter,
             test_duration_s=conf.test_duration_s,
+            generator=gen,
         )
         report["results"].update(nats_result.as_metadata())
         # Record where the stream ended up. unconsumed>0 after the settle means
@@ -336,6 +401,7 @@ def run(
         print(
             f"  stored={res['total_messages']}  devices={res['unique_devices']}  "
             f"throughput={res['throughput_msg_s']} msg/s  "
+            f"delivered={res.get('delivery_ratio_pct')}%  "
             f"eff={res['efficiency_pct']}%  p99={lat.get('p99_ms')} ms  "
             f"[{latency_metric}]"
         )

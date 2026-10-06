@@ -1847,3 +1847,54 @@ so, and should be re-checked once the denominator is fixed.
 Fix 1 is a change to `harness/runner.py` and `harness/report.py`. Until it lands,
 any rate above ~2000 msg/s should be reported as "throughput and drop rate
 against a nominal target, generator accurate to X%", not as efficiency.
+
+### D27 resolution — the achieved-rate denominator, and a second metric
+
+Three separate defects between "the publisher reports its rate" and "the report
+is honest". Each had to be found separately because each masked the next.
+
+**1. stdout went to DEVNULL.** `spawn_publishers` used
+`stdout=subprocess.DEVNULL, stderr=subprocess.PIPE`, and the summary line
+(`published=... achieved=... msg/s`) is printed to **stdout**. The harness
+physically could not read it. Now captured.
+
+**2. The publisher had no SIGTERM handler at all.** The harness stops publishers
+with SIGTERM the instant the window closes. Default SIGTERM action killed the
+process, so the summary on the normal exit path never ran. I had written a code
+comment asserting the line "is reached from the SIGTERM handler" — there was no
+such handler. Added one, plus file-scope summary state and a shared
+`print_summary()`.
+
+`fflush(stdout)` after the summary is required, not tidy: stdout is
+block-buffered whenever it is not a tty, and under the harness it never is.
+
+**3. `stop_publishers` reaped against a shared 5s budget.** It signalled and
+waited on each process in turn, so with 100 publishers the first straggler
+consumed the budget and the other 99 were SIGKILLed before printing. Now all are
+signalled first, then reaped against one 30s deadline.
+
+Verified on the cluster: 100/100 processes reporting, achieved 1997.94 of a
+nominal 2000 (99.9% generator accuracy).
+
+### The metric that was never measuring loss
+
+With the denominator fixed, one run read `published=89390`, `stored=89390` —
+identical — and efficiency still read **91.49%**. Nothing had been lost. The
+entire gap was the observation window: throughput divides by the span of the
+VictoriaMetrics samples, which includes the settle period and write lag, and so
+is longer than the interval the generator actually published over.
+
+That makes `efficiency` a window-alignment metric wearing a loss metric's name.
+Added `delivery_ratio_pct` = stored / generator_published, which compares counts
+and is therefore immune to window definitions:
+
+    published by generator:  89526
+    stored in VM:            89526
+    DELIVERY RATIO:          100.0%   <- actual loss: none
+    efficiency:              99.44%   (window 45.06s vs a 45s run)
+
+Read `delivery_ratio_pct` first. `efficiency_pct` is retained because it is what
+the earlier corrected matrices reported, and `efficiency_pct_nominal_basis` is
+retained so those stay readable. Ten regression tests cover the basis selection,
+the fallback when no generator data exists, zero-division, and the
+perfect-delivery-despite-low-efficiency case.
