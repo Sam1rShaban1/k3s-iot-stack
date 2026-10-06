@@ -1898,3 +1898,62 @@ the earlier corrected matrices reported, and `efficiency_pct_nominal_basis` is
 retained so those stay readable. Ten regression tests cover the basis selection,
 the fallback when no generator data exists, zero-division, and the
 perfect-delivery-despite-low-efficiency case.
+
+---
+
+## D28 — Saturation ladder: the ingest path fails between 3000 and 5000 msg/s
+
+Run with the client count **held at 100** so rate is the only variable, and with
+`delivery_ratio_pct` (D27) as the loss metric rather than efficiency.
+
+| rate | generator achieved | accuracy | published | stored | **delivery** | p99 |
+|---|---|---|---|---|---|---|
+| 2000/s | 1997.9 / 2000 | 99.90% | 89,526 | 89,526 | **100.0%** | 3769 ms |
+| 3000/s | — | ~99.7% | 134,174 | 134,174 | **100.0%** | 4987 ms |
+| 5000/s | 4982.9 / 5000 | 99.66% | 222,966 | 88,957 | **39.9%** | 3661 ms |
+| 10000/s @400c | — | — | — | 2,823 | **0.64%** | 12035 ms |
+
+**The load generator is not the constraint.** At 5000/s it delivered 99.66% of
+nominal while the pipeline delivered 39.9%, and the run at 3000/s was lossless
+with the same client count. This is the check that was missing when the fake QoS
+ceiling entered paper §V-C.
+
+### Where the loss is, and where it is not
+
+Not in NATS. `nats_retained` (88,957) equals `stored` (88,957) exactly, with
+`unconsumed=0` and `nats_drained=True`. So the consumer is not dropping and not
+lagging — every message that reached NATS was stored.
+
+Not in the consumer's batching either: `BATCH_SIZE=5000` with an unbounded
+`batch_queue`, which would grow memory rather than drop.
+
+**The loss is between the MQTT broker and NATS.** 134,009 messages the publisher
+sent never reached the JetStream stream. Benthos's input shows repeated
+`Connection lost due to: EOF`, so the leading candidate is Benthos losing its
+EMQX subscription under load — but that is not yet proven, and an earlier
+attempt to localize it using Benthos's `input_received`/`output_sent` counters
+was **invalid**: those counters are cumulative since pod start, not per run, so
+the numbers I first read as this run's traffic were cumulative. The conclusion
+happened to point the same way; the reasoning did not.
+
+### What would settle it
+
+1. **Benthos counter deltas, not absolutes.** Sample `input_received` and
+   `output_sent` immediately before and after a run. The distinction between
+   "Benthos never received them" and "Benthos received and failed to forward"
+   is the whole question, and cumulative counters cannot answer it.
+2. **EMQX's own dropped-message metric.** Its dashboard is currently
+   LAN-blocked by its own NetworkPolicy (18083/8083 reachable only from the
+   `monitoring` namespace), so the broker cannot account for what it dropped.
+   That is the same class of gap as the VictoriaMetrics LAN ingress fixed in D26.
+3. **Bracket the knee** at 3500/s and 4000/s, and 250c vs 100c at 5000/s, since
+   the 5000/s run above is the only one that varied anything other than rate.
+
+### Latency note
+
+p99 does not degrade monotonically with load — 3769 ms at 2000/s, 4987 ms at
+3000/s, 3661 ms at 5000/s, 12035 ms at 10000/s. The 5000/s figure is lower
+because most messages were dropped rather than delayed, which is the expected
+shape when a path fails by discarding instead of queueing. Latency percentiles
+are only meaningful while delivery is near 100%, and should always be reported
+next to the delivery ratio rather than on their own.
