@@ -2023,3 +2023,70 @@ reaching outward for something it should answer locally — but a different
 mechanism, and it needs the nodes' `resolv.conf` corrected. Until then ArgoCD
 cannot sync, so **Git remains the only source of truth and live drift will keep
 reappearing**.
+
+---
+
+## D30 — One node's WiFi was the cause of all the DNS symptoms
+
+Chasing "ArgoCD won't sync / external DNS fails" turned out to be a single node.
+
+### The chain
+
+1. **pi3's `wlan0` drops.** It reconnected, then dropped again minutes later.
+   With no active connection NetworkManager writes an **empty `/etc/resolv.conf`**
+   — no `nameserver` at all.
+2. **pi3's CoreDNS replica cannot start.** Its Corefile is
+   `forward . /etc/resolv.conf`, so with no nameserver it exits with
+   `plugin/forward: no nameservers found`. Observed crash-looping 3h42m, 282
+   back-offs.
+3. **Cluster DNS degrades intermittently, not totally.** The `kube-dns` Service
+   has three endpoints (pi3, pi4, pi7). With pi3's dead, roughly one query in
+   three is load-balanced to a replica that cannot forward. That is why probes
+   were inconsistent — `github.com` resolved on some attempts and not others,
+   and why it looked like flakiness, rate limiting, or port restriction.
+4. **ArgoCD cannot resolve `github.com`**, so every Application reports
+   `ComparisonError: failed to list refs` → `status: Unknown` → the controller
+   logs *"Skipping auto-sync: application status is Unknown"* → Git is never
+   read and live state never converges.
+
+### What was ruled out, with evidence
+
+| hypothesis | result |
+|---|---|
+| `seeu.edu.mk` search domain | **Red herring.** Present the whole time; never the blocker. |
+| NetworkPolicy in `argocd` | No policy exists in that namespace. |
+| Repo credentials | Repo is `PUBLIC`; no secret needed. |
+| `github.com:443` blocked | **Misread.** It was a DNS failure presenting as a TCP failure. Resolves and connects once DNS is healthy. |
+| Conntrack exhaustion | 352 entries against a 131,072 limit. |
+| MTU | `cni0` at 1450, normal for Calico. |
+| CoreDNS config | Stock Corefile; logs **no** forward errors when healthy. |
+| kube-proxy / Service layer | kube-dns Service correct: selector matches, all 3 endpoints present. Direct pod-IP queries work same-node. |
+| Cross-node pod networking | Works — pi4→pi7 and pi7→pi4 both fine. |
+| pi3's node network | eth0/cni0/flannel.1 all UP, routes correct, ICMP fine. Only the **wifi uplink** is dead. |
+
+`nc -z` in the `longhorn-manager` image reports CLOSED even for endpoints that
+are demonstrably open (NATS pod IP, which the consumer connects to). Any
+connectivity result from that tool in this image is worthless — it produced one
+false "all ClusterIPs are blocked" reading before being discarded.
+
+### pi3's WiFi needs hands-on attention
+
+`nmcli dev wifi rescan` on pi3 lists MVDSI (signal 79), but **both** the
+original `Wi-Fi` profile and a freshly created `MVDSI` profile fail activation
+with *"The Wi-Fi network could not be found"*. The adapter sees the network in
+a scan but cannot associate with it. That is below the configuration layer and
+is not fixable from inside the cluster.
+
+Also worth fixing while pi3 is in hand: its `eth0` is `10.0.0.4/8`, where every
+other node uses `/24`. A /8 makes pi3 claim the entire `10.0.0.0/8` space, which
+contains the pod CIDR `10.42.x` and service CIDR `10.43.x`.
+
+### The durable lesson
+
+Every symptom in this stretch pointed at ArgoCD, DNS configuration, NetworkPolicy
+or the network. The actual fault was one node's wireless uplink, and the
+tell was that **the failure rate matched the endpoint ratio** — one dead replica
+of three is a one-in-three failure, which is exactly what the inconsistent
+probes showed. Worth checking per-endpoint health before blaming a config layer,
+and worth a preflight check that every DNS replica can actually resolve an
+external name, since "Running" says nothing about whether CoreDNS can forward.
