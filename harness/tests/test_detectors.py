@@ -556,3 +556,71 @@ class TestPolicySelectorResolve(unittest.TestCase):
         c = next(c for c in result.checks if c.name == "policy-selectors-resolve")
         self.assertFalse(c.ok)
         self.assertIn("could not list namespaces", c.detail)
+
+
+class TestDnsPerNode(unittest.TestCase):
+    """Detector class 13: can a pod on EACH node actually resolve a name?
+
+    Found on 2026-10-08. One node's `wlan0` dropped, NetworkManager wrote an
+    empty `/etc/resolv.conf`, and that node's CoreDNS replica died with
+    `plugin/forward: no nameservers found`. The `kube-dns` Service still had
+    three endpoints, so roughly one lookup in three was load-balanced onto a
+    replica that could not forward.
+
+    Every other check runs from the control-plane node or from outside the
+    cluster, so all of them stayed green while a quarter of the cluster's pods
+    could not resolve anything. The one-in-three failure rate was the tell.
+    """
+
+    # node -> what its probe pod prints. None simulates a pod that never runs.
+    CASES = {
+        "all-ok": {"pi2": "RESOLVED", "pi7": "RESOLVED", "master": "RESOLVED"},
+        "one-broken": {"pi2": "FAILED", "pi7": "RESOLVED", "master": "RESOLVED"},
+        "never-ran": {"pi2": None, "pi7": "RESOLVED", "master": "RESOLVED"},
+    }
+
+    def _run(self, script):
+        """script maps node name -> the line its probe pod prints."""
+        nodes = " ".join(script)
+        # The detector names pods dnscheck-<node with dots replaced by dashes>.
+        by_pod = {
+            f"dnscheck-{n.replace('.', '-')}": out for n, out in script.items()
+        }
+
+        def fake(args, *a, **kw):
+            text = " ".join(args)
+            if "get nodes" in text:
+                return 0, nodes, ""
+            if args and args[0] == "logs":
+                name = next((n for n in by_pod if n in args), None)
+                out = by_pod.get(name)
+                if out is None:
+                    return 1, "", "not found"
+                return 0, out, ""
+            if "get pod" in text:
+                if "state.running" in text:
+                    return 0, '{"running":{}}', ""
+                if "phase" in text:
+                    return 0, "Running", ""
+            return 0, "", ""
+
+        result = PreflightResult()
+        with mock.patch.object(preflight, "_kubectl", side_effect=fake), \
+                mock.patch.object(preflight, "DNS_PROBE_TIMEOUT_S", 1):
+            preflight.check_dns_from_every_node(result)
+        return next(c for c in result.checks if c.name == "dns-per-node")
+
+    def test_all_nodes_resolving_passes(self):
+        c = self._run(self.CASES["all-ok"])
+        self.assertTrue(c.ok, c.detail)
+
+    def test_a_node_that_cannot_resolve_fails(self):
+        c = self._run(self.CASES["one-broken"])
+        self.assertFalse(c.ok)
+        self.assertIn("cannot resolve", c.detail)
+
+    def test_node_whose_probe_never_ran_is_reported_not_passed(self):
+        """A silent probe must never be mistaken for a healthy node."""
+        c = self._run(self.CASES["never-ran"])
+        self.assertFalse(c.ok)
+        self.assertIn("could not test", c.detail)

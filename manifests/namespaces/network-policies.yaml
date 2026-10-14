@@ -179,6 +179,21 @@ spec:
           port: 18083
         - protocol: TCP
           port: 8083
+    # Dashboard API from the LAN, for operator inspection.
+    #
+    # Without this the broker cannot be asked what it is doing: from the
+    # monitoring namespace the dashboard refuses, and from the workstation the
+    # port is unreachable, so a duplication fault has to be inferred from
+    # counters rather than read from the broker that causes it. The same
+    # reasoning as the VictoriaMetrics LAN ingress.
+    - from:
+        - ipBlock:
+            cidr: 192.168.1.0/24
+        - ipBlock:
+            cidr: 10.0.0.0/8
+      ports:
+        - protocol: TCP
+          port: 18083
     # log and trace shipping
     - from:
         - namespaceSelector:

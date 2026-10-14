@@ -18,6 +18,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -82,12 +83,14 @@ class PreflightResult:
         }
 
 
-def _kubectl(args: list[str], timeout: int = 20) -> tuple[int, str, str]:
+def _kubectl(args: list[str], timeout: int = 20,
+             stdin: str | None = None) -> tuple[int, str, str]:
     try:
         res = subprocess.run(
             ["kubectl", *args],
             capture_output=True,
             text=True,
+            input=stdin,
             timeout=timeout,
             check=False,
         )
@@ -800,6 +803,117 @@ def check_policy_selectors_resolve(result: PreflightResult) -> None:
         )
 
 
+DNS_PROBE_TIMEOUT_S = 150
+
+
+def check_dns_from_every_node(result: PreflightResult) -> None:
+    """Detector class 13: can a pod on EACH node actually resolve a name?
+
+    Found on 2026-10-08. A node's `wlan0` dropped, NetworkManager wrote an empty
+    `/etc/resolv.conf`, and that node's CoreDNS replica died with
+    `plugin/forward: no nameservers found`. But the `kube-dns` Service still had
+    three endpoints, so roughly one lookup in three was load-balanced onto a
+    replica that could not forward.
+
+    The symptom was maddeningly intermittent -- external lookups succeeded and
+    failed on consecutive attempts -- and every other check stayed green. This
+    is the failure rate of one dead replica of three, which is what gave it away
+    once it was measured rather than guessed at.
+
+    Every other check here runs from the control-plane node or from outside the
+    cluster, so all of them can pass while a quarter of the cluster's pods cannot
+    resolve anything. A check that only ever exercises the happy path cannot
+    see that.
+
+    Runs a throwaway pod on every node and asks it to resolve an external name,
+    which exercises that node's DNS path end to end: pod -> kube-dns ->
+    CoreDNS -> upstream resolver.
+    """
+    nodes = _kubectl(["get", "nodes", "-o", "jsonpath={.items[*].metadata.name}"])[1].split()
+    nodes = [n for n in nodes if n]
+    if not nodes:
+        result.add(Check("dns-per-node", False, "could not list nodes"))
+        return
+
+    IMAGE = "longhornio/longhorn-manager:v1.7.2"  # already side-loaded on all nodes
+    def manifest_for(node: str) -> str:
+        # nodeName goes in the manifest, not a follow-up patch: it is immutable
+        # once the pod is scheduled, and the scheduler binds immediately.
+        return f"""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dnscheck-{node.replace('.', '-')}
+  namespace: default
+spec:
+  nodeName: {node}
+  restartPolicy: Never
+  containers:
+    - name: c
+      image: {IMAGE}
+      command: ["sh", "-c", "nslookup github.com >/dev/null 2>&1 && echo RESOLVED || echo FAILED; sleep 300"]
+"""
+
+    # All probes run concurrently. Doing them one node at a time meant the
+    # later nodes were still Pending when the first one's result came back, so
+    # the whole check took minutes and reported Pending as "could not test".
+    pods = {n: f"dnscheck-{n.replace('.', '-')}" for n in nodes}
+    for node, name in pods.items():
+        _kubectl(["delete", "pod", name, "-n", "default",
+                  "--ignore-not-found", "--wait=true", "--timeout=15s"])
+    for node, name in pods.items():
+        _kubectl(["apply", "-f", "-"], stdin=manifest_for(node), timeout=40)
+
+    results: dict[str, str] = {}
+    # Module-level so tests can shorten it; at 150s the "probe never ran" case
+    # alone makes the suite take two and a half minutes.
+    deadline = time.time() + DNS_PROBE_TIMEOUT_S
+    while time.time() < deadline and len(results) < len(pods):
+        for node, name in pods.items():
+            if node in results:
+                continue
+            code, logs, _ = _kubectl(["logs", name, "-n", "default", "--tail=5"])
+            if code == 0 and "RESOLVED" in logs:
+                results[node] = "ok"
+            elif code == 0 and "FAILED" in logs:
+                results[node] = "broken"
+        if len(results) < len(pods):
+            time.sleep(3)
+
+    broken: list[str] = []
+    unchecked: list[str] = []
+    for node, name in pods.items():
+        _kubectl(["delete", "pod", name, "-n", "default",
+                  "--ignore-not-found", "--wait=false"])
+        if node not in results:
+            code, out, _ = _kubectl(
+                ["get", "pod", name, "-n", "default", "-o", "jsonpath={.status.phase}"]
+            )
+            code2, logs2, _ = _kubectl(["logs", name, "-n", "default", "--tail=3"])
+            why = "no logs"
+            if code2 == 0 and logs2.strip():
+                why = logs2.strip().splitlines()[-1][:50]
+            unchecked.append(f"{node} (phase={out.strip() or 'gone'}, {why})")
+        elif results[node] == "broken":
+            broken.append(node)
+
+    parts = []
+    if broken:
+        parts.append(
+            f"cannot resolve from: {', '.join(broken)} -- their pods have no working "
+            "DNS path even though every other check passes"
+        )
+    if unchecked:
+        parts.append(f"could not test: {', '.join(unchecked)}")
+    if parts:
+        result.add(Check("dns-per-node", False, "; ".join(parts)))
+    else:
+        result.add(
+            Check("dns-per-node", True,
+                  f"pods on all {len(nodes)} nodes resolve external names")
+        )
+
+
 def run_preflight(components: bool = True) -> PreflightResult:
     result = PreflightResult()
     reachable = check_cluster_reachable(result)
@@ -811,6 +925,7 @@ def run_preflight(components: bool = True) -> PreflightResult:
         check_network_policies(result)
         check_apiserver_egress(result)
         check_policy_selectors_resolve(result)
+        check_dns_from_every_node(result)
         check_benthos_subscription(result)
         check_jetstream_retention(result)
         check_airgap_images(result)

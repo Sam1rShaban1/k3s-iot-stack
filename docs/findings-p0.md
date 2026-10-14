@@ -2090,3 +2090,82 @@ of three is a one-in-three failure, which is exactly what the inconsistent
 probes showed. Worth checking per-endpoint health before blaming a config layer,
 and worth a preflight check that every DNS replica can actually resolve an
 external name, since "Running" says nothing about whether CoreDNS can forward.
+
+---
+
+## D31 — Root cause of the outage: a Pi was unplugged
+
+After five days the cluster came back. The cause was mundane: **pi3 was
+unplugged from the power**. Everything else followed from that.
+
+### What a dead node actually did
+
+| effect | detail |
+|---|---|
+| kubelet silent | last heartbeat `2026-10-08T13:31Z`, `bootTime` empty |
+| 5 pods stuck `Terminating` | never reaped, because no kubelet could confirm deletion |
+| **ArgoCD controller dead** | `argocd-application-controller-0` was on pi3 → StatefulSet had **0 ready replicas for five days** |
+| no GitOps | with no controller, nothing reconciles, so every Application sat at `Unknown` |
+| DNS degraded | pi3's CoreDNS replica died (`plugin/forward: no nameservers found`) → kube-dns still had 3 endpoints, so ~1 lookup in 3 hit a dead one |
+
+**No force-delete was needed.** The moment pi3 rejoined, all five orphans
+reaped themselves and the controller came back `1/1 Running` on its own. I had
+planned to force-delete them; that would have been unnecessary and riskier than
+doing nothing.
+
+The lesson I keep re-learning, recorded a third time because it cost this whole
+stretch: **check whether a node is alive before diagnosing a component.**
+Every symptom — ArgoCD `Unknown`, DNS flakiness, `ImagePullBackOff`, failing
+manifests — was downstream of one unplugged cable.
+
+### What was already right, and what wasn't
+
+- Detector 13 (`dns-per-node`) **caught pi3's failure on the day it happened**,
+  and caught pi2's intermittent DNS too. It is now the check that would have
+  said "a quarter of the cluster cannot resolve names" instead of leaving every
+  other check green.
+- The registry-mirror fix (`10.0.0.1:30500`) from D29 held. No node needed
+  re-pulling images across the outage.
+
+### Two real defects found during recovery
+
+**1. EMQX's Service selected nothing.** `emqx-network-policy`'s podSelector had
+drifted, and the EMQX Service selector required
+`app.kubernetes.io/instance` + `app.kubernetes.io/name` while the deployed pod
+carried neither — only `app: emqx`. So the Service had **zero endpoints** and
+Benthos got `connection refused`, while EMQX itself was healthy and listening.
+Same class as D22: a selector that matches nothing is invisible from the API.
+
+ArgoCD could not fix it because the live StatefulSet's pod template also lacked
+the chart labels, and `spec` updates on an existing StatefulSet are **immutable**
+(`Forbidden: updates to statefulset spec`). Deleting the StatefulSet and letting
+ArgoCD recreate it from the chart was the clean fix — endpoints returned, app
+went `Synced`.
+
+**2. Duplication reappeared after the replica count changed — transiently.**
+Delivery ran at **164–170%**, with exactly 100 unique devices. Benthos counter
+deltas located it precisely:
+
+| metric | value |
+|---|---|
+| generator published | 89,363 |
+| Benthos `input_received` delta | 147,390 |
+| `output_sent` delta | 147,390 (equal) |
+| `output_error` | 0 |
+| VM `stored` | 147,390 |
+
+So Benthos received the duplicates and forwarded them faithfully — the fault was
+upstream, at EMQX. Scaling to **1 replica gave 100.0% delivery**; scaling back to
+5 initially reproduced it, but after a full pod cycle five replicas also gave
+**100.0%** with `input_received` delta exactly equal to `stored`.
+
+The mechanism is stale MQTT sessions on pods that predated the replica change:
+QoS 1 messages unacknowledged at kick-off get redelivered when the client
+reconnects. `input_connection_lost: 14` in one run is consistent. It cleared on a
+clean pod cycle, which is why it must be re-verified after any change to Benthos
+replica count rather than assumed.
+
+Worth noting how this would have been misread: the old `efficiency` metric
+reported 164% and the corrected `delivery_ratio_pct` reported 170%, both of which
+read as "impossibly good" rather than "duplicated". The ratio being well above
+100% is the only reliable signal.
