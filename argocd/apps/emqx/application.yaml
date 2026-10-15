@@ -59,12 +59,43 @@ spec:
             ws: 8083
             wss: 8084
             dashboard: 18083
+        # mqtt.max_mqueue_len: 1000 -> 10000
+        #
+        # Found by reading EMQX's own logs (D34). At 4000 msg/s EMQX was
+        # killing Benthos connections itself:
+        #
+        #   check_oom_shutdown, shutdown:
+        #     #{max => 1000, reason => mailbox_overflow, value => 1063}
+        #   supervisor: {esockd_connection_sup,...},
+        #     errorContext: connection_shutdown, reason: mailbox_overflow
+        #   alarm_is_deactivated, name: runq_overload
+        #
+        # Each Benthos client's process mailbox filled past the default 1000
+        # queued messages, so EMQX disconnected it to protect itself. Messages
+        # in that mailbox were lost -- which is the 43,746-message gap between
+        # messages.received (178,667) and messages.delivered (132,246) that
+        # EMQX attributed to no counter at all. Only 2,675 were recorded as
+        # dropped.no_subscribers.
+        #
+        # Benthos is the slowest stage in the path, so its mailboxes are the
+        # ones that fill. 10000 gives it room to absorb a burst instead of
+        # being severed from the broker mid-stream. Setting
+        # clean_session: true on the Benthos side did NOT help (it was measured,
+        # delivery went 74% -> 60%): the disconnects are the broker dropping a
+        # slow consumer, not session state being restored.
+        mqtt:
+          max_mqueue_len: 10000
+
+        # cpu 500m -> 1500m. The same logs show runq_overload, and the node has
+        # four cores. A half-core ceiling on a broker that is the measured
+        # bottleneck is the wrong trade; this is memory that stays bounded by the
+        # limit below.
         resources:
           limits:
-            cpu: 500m
+            cpu: 1500m
             memory: 512Mi
           requests:
-            cpu: 100m
+            cpu: 250m
             memory: 256Mi
   destination:
     server: https://kubernetes.default.svc

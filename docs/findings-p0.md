@@ -2331,3 +2331,87 @@ claim predicts.
    limit that low can throttle exactly at ingress bursts.
 3. **EMQX clustering** (replicas: 1 today) would put more brokers behind the
    shared subscription. Largest change, and the most likely to move the ceiling.
+
+---
+
+## D34 — EMQX was killing Benthos; fixing it doubled the ceiling
+
+D33 localised the loss to EMQX but could not explain *why*. EMQX's own log did.
+
+### The mechanism
+
+```
+[warning] clientid: benthos-consumer-…, msg: check_oom_shutdown,
+          shutdown: #{max => 1000, reason => mailbox_overflow, value => 1063}
+[error]   supervisor: {esockd_connection_sup,…},
+          errorContext: connection_shutdown, reason: mailbox_overflow
+[warning] msg: alarm_is_deactivated, name: runq_overload
+```
+
+EMQX was **disconnecting Benthos** because each client's process mailbox
+overflowed past `max_mqueue_len` (default **1000** queued messages). That is
+EMQX's backpressure against a slow consumer — and Benthos *is* the slowest stage.
+Every disconnect severed messages mid-flight, which is the 43,746-message gap
+between `messages.received` and `messages.delivered` that EMQX attributed to no
+counter at all.
+
+### What was tried first, and did not work
+
+`clean_session: true` on the Benthos MQTT input, on the theory that persistent
+session state was the cost. **Measured, and it got worse**: delivery 74% → 60%,
+`input_connection_lost` 28 → 42. Session churn persisted at 142 sessions per 45s
+with clean sessions supposedly set. So the churn was never session restoration;
+it was the broker dropping a slow consumer. Worth recording as a measured dead
+end rather than deleting from the history.
+
+### The fix
+
+In `argocd/apps/emqx/application.yaml`:
+
+- `mqtt.max_mqueue_len`: 1000 → **10000**
+- CPU limit: `500m` → **1500m** (node has 4 cores; the logs also showed
+  `runq_overload`, and half a core for the measured bottleneck was the wrong trade)
+
+### Result — the ceiling roughly doubled
+
+| rate | before (D32/D33) | after |
+|---|---|---|
+| 4000/s | 58.6–74.0% | **100.0%** |
+| 5000/s | 13.8–18.0% | **96.1%** |
+| 6000/s | — | **92.8%** |
+| 7000/s | — | **68.9%** |
+| 8000/s | — | **48.5%** |
+
+At 4000 msg/s: `unaccounted` went from 64,226 to **0**, `dropped.no_subscribers`
+to **0**, and `input_connection_lost` from 42 to **0**. Benthos `input_received`,
+`output_sent` and VM `stored` all equal **178,859** — every stage now exact.
+
+**Sustainable rate moved from 3000–4000 msg/s to 6000–7000 msg/s.**
+
+Latency at 6000 msg/s:
+
+```
+  stage                                     p50      p90       p99       max
+  publisher -> EMQX -> Benthos -> NATS      760     1700      2620      3156
+  consumer -> VictoriaMetrics                48      246       406       406
+  end to end                               1088     2161      2850      2959
+```
+
+Still ingest-dominated (92% of p99), and the *absolute* p99 is now lower than it
+was at 2000 msg/s before the fix, because nothing is being dropped and queued.
+
+### Process notes worth keeping
+
+- Editing a Git file does not change a live ArgoCD Application: the Application
+  object carries the helm values inline, so `kubectl apply` of the manifest is
+  required before a sync will use them. Editing Git alone gave a confident
+  `Synced` while nothing had changed.
+- The repo-server liveness probe used `/healthz?full=true`, which makes the
+  **liveness** check verify redis and argocd-server. On this hardware it timed
+  out, and the kubelet SIGTERM'd a healthy process (observed: 115 restarts, clean
+  `exit 0`, "got signal terminated"). Liveness should test the process; dependency
+  health is what readiness is for. Changed to `/healthz` with a 6-failure
+  threshold.
+- StatefulSet spec updates can be forbidden outright (`Forbidden: updates to
+  statefulset spec`), so a chart-driven change to one may need the object
+  deleted and recreated.

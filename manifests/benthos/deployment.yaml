@@ -17,6 +17,22 @@ data:
           - $share/benthos/sensors/#
         client_id: benthos-consumer-${HOSTNAME}
         qos: 1
+        # clean_session: true -- explicit, because the default leaves broker-side
+        # session state behind for a subscriber that reconnects dozens of times a
+        # minute.
+        #
+        # Measured at 4000 msg/s (D33): EMQX recorded 128 sessions created and
+        # 128 terminated in 45s, each replica logged 5-6 input_connection_lost,
+        # and 43,746 messages vanished between messages.received (178,667) and
+        # messages.delivered (132,246) that EMQX attributed to no counter at
+        # all -- including only 2,675 as dropped.no_subscribers.
+        #
+        # Benthos is stateless here: it acks nothing upstream, resumes nothing on
+        # reconnect, and holds no durable state. A persistent session buys
+        # nothing and costs broker-side bookkeeping on every reconnect. QoS 0
+        # means there is no in-flight window to preserve either.
+        clean_session: true
+        keepalive: 60
 
     # NOTE: a `benthos_entry_ts` processor was attempted here to split the
     # end-to-end latency into its stages, and it silently destroyed the
