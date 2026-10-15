@@ -2268,3 +2268,66 @@ Latency attribution at 3000 msg/s on five nodes:
 close this properly the next step is EMQX's own dropped-message and
 subscription counters — reachable now that its dashboard is open to the LAN,
 though the API needs credentials that have not been configured.
+
+---
+
+## D33 — Where the ingest loss actually is: EMQX, quantified
+
+With EMQX's dashboard reachable (credentials `admin:public`, from
+`configmap/emqx-env`), the loss at 4000 msg/s can finally be measured at each hop
+instead of inferred. Counter deltas over a single 45s run at 100 clients:
+
+| hop | counter | delta |
+|---|---|---|
+| publisher | sent | ~178,600 |
+| **EMQX in** | `messages.received` / `messages.publish` | **178,667** |
+| EMQX accounted | `messages.dropped.no_subscribers` | 2,675 |
+| **EMQX out** | `messages.sent` / `messages.delivered` | **132,246** |
+| | **unaccounted inside EMQX** | **43,746** |
+| Benthos in | `input_received` | 132,246 |
+| Benthos out | `output_sent` | 132,246 |
+| Benthos errors | `output_error` | 0 |
+| VictoriaMetrics | stored | 132,246 |
+
+Every stage after EMQX is exact. Benthos receives precisely what EMQX sends,
+forwards precisely what it receives, and reports zero errors. The loss is
+entirely inside EMQX's delivery path — and **EMQX has no counter for it**.
+
+### Configuration is correct
+
+- 5 connected clients, **all with distinct client IDs**
+  (`benthos-consumer-benthos-56b4c7f975-…`), so `${HOSTNAME}` *is* interpolated
+  and my earlier shared-client-ID hypothesis was wrong
+- exactly 5 subscriptions, all to `$share/benthos/sensors/#`, QoS 1 — no stray
+  non-shared subscriptions and **no rules**, so nothing is bridging or re-publishing
+- `delivery.dropped: 0` and `delivery.dropped.queue_full: 0` throughout
+
+### It is not resource exhaustion
+
+`emqx-0` sits at **6m CPU** and 198Mi of a 512Mi limit, on a node with 4 cores.
+It is not CPU-bound, not memory-bound, and reports no queue-full drops.
+
+### Session churn is the one correlate
+
+During that run EMQX recorded **128 sessions created and 128 terminated**, and
+each Benthos replica logged 5–6 `input_connection_lost` — about 28 disconnects
+across 5 pods in 45 seconds. For QoS 0 a reconnect should cost nothing, yet
+43,746 messages went missing while only 2,675 were attributed to
+`no_subscribers`.
+
+### What this settles
+
+The paper can now say the ceiling is **EMQX's single-node delivery to a shared
+subscription**, not cluster ingest capacity. The fifth node did not move the
+knee (D32) even though Benthos scales one-per-node, which is exactly what that
+claim predicts.
+
+### What to try next, in order
+
+1. **Reduce Benthos reconnect churn.** Set an explicit MQTT session behaviour in
+   the Benthos input; persistent sessions on a flapping client cost far more than
+   the 28 disconnects suggest. This is the only correlate to the loss.
+2. **Raise EMQX's CPU limit** from 500m. Not indicated by CPU usage today, but a
+   limit that low can throttle exactly at ingress bursts.
+3. **EMQX clustering** (replicas: 1 today) would put more brokers behind the
+   shared subscription. Largest change, and the most likely to move the ceiling.
