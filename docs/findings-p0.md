@@ -2415,3 +2415,90 @@ was at 2000 msg/s before the fix, because nothing is being dropped and queued.
 - StatefulSet spec updates can be forbidden outright (`Forbidden: updates to
   statefulset spec`), so a chart-driven change to one may need the object
   deleted and recreated.
+
+---
+
+## D35 — The real setting was `force_shutdown.max_mailbox_size`
+
+D34 raised EMQX's CPU limit and the ceiling doubled, but the mailbox overflow
+kept firing. Three settings were placed wrongly before the right one, and the
+Application reported **Synced** after every one of them.
+
+| attempt | where | outcome |
+|---|---|---|
+| 1 | top-level `mqtt: {max_mqueue_len: 10000}` | no env var rendered; ignored |
+| 2 | `env: [{name: EMQX_MQTT__MAX_MQUEUE_LEN}]` | not a key this chart reads |
+| 3 | `emqxConfig: {EMQX_MQTT__MAX_MQUEUE_LEN}` | env var rendered, restarts cleanly, **still `max => 1000`** |
+| 4 | `emqxConfig: {EMQX_FORCE_SHUTDOWN__MAX_MAILBOX_SIZE}` | **works** |
+
+The error names itself:
+
+```
+check_oom_shutdown, shutdown: #{max => 1000, reason => mailbox_overflow, value => 1063}
+supervisor: {esockd_connection_sup, …}, errorContext: connection_shutdown
+```
+
+`esockd_connection_sup` is EMQX's **socket-process** supervisor. So the ceiling
+being hit is EMQX's socket mailbox, governed by
+`force_shutdown.max_mailbox_size` (default 1000) — not `mqtt.max_mqueue_len`,
+which is the session's queued-message limit and has no effect on this path.
+
+Three placements ignored in a row is the signal that the value was being
+**guessed rather than read out of the error**. Attempt 3 was the most
+misleading because the env var genuinely appeared in `emqx-env`, the pod
+genuinely restarted, and the Application genuinely said Synced — everything
+looked right except the one thing being measured.
+
+### Correcting the record on D34
+
+D34 attributed the entire doubling to the CPU limit. That was right, and worth
+stating precisely: **the 100% at 4000 msg/s was achieved on CPU alone**, with the
+mailbox overflow still active. `force_shutdown.max_mailbox_size` was not in
+effect. It is headroom on top, and it is what made 6000 msg/s lossless.
+
+### Final ladder — 100 clients constant
+
+| rate | delivery | note |
+|---|---|---|
+| 4000/s | **100.0%** | D34, CPU limit only |
+| 5000/s | 96.1% | |
+| 6000/s | **100.0%** (×3 runs) | both fixes |
+| 7000/s | 70.0% | |
+| 7500/s | 66.3% | |
+| 8000/s | 65.9% | |
+| 10000/s | 21.1% | |
+
+**Knee moved from 3000–4000 to 6000–7000 msg/s.** At 6000: EMQX
+`unaccounted` 0, `input_connection_lost` 0, and Benthos `input_received` =
+`output_sent` = VM `stored` = 266,900 exactly.
+
+Latency at 6000 msg/s: ingest p99 2680 ms, storage 848 ms, end-to-end 2705 ms.
+Still ingest-dominated (99% of p99), so EMQX's delivery path remains the
+constraint.
+
+### Headroom beyond 6000
+
+Node CPU/memory sampled under 6000 msg/s load:
+
+| node | cpu | mem |
+|---|---|---|
+| pi2 | 474m (12%) | 11% |
+| pi3 | 451m (11%) | 11% |
+| pi4 | 746m (19%) | 18% |
+| pi7 | 547m (14%) | 13% |
+| raspberrypi (control plane) | 1940m (49%) | 48% |
+
+**The data plane is not the constraint** — three of five nodes sit under 20% CPU
+and 20% memory while delivering 6000 msg/s losslessly. Per-pod CPU under load
+was EMQX 549m, NATS 694m, Benthos 131m, each consumer 220–365m.
+
+The hot node is `raspberrypi`, and `ps` there shows **k3s-server at ~1.6 GB RSS**
+as the dominant consumer — the control plane, not the data plane. That is the
+next thing to attack: the single-node control plane is the ceiling, and
+offloading the control plane from the same machine as the workload (or
+constraining Prometheus, 1587 Mi, which is the largest single memory consumer in
+the cluster) should buy more than any further data-plane tuning.
+
+Note also that `mqtt.max_mqueue_len` remains at its default. It was measured as
+having no effect on this failure, and was removed rather than left set to a
+value with no demonstrated benefit.

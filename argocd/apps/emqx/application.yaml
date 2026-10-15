@@ -83,8 +83,42 @@ spec:
         # clean_session: true on the Benthos side did NOT help (it was measured,
         # delivery went 74% -> 60%): the disconnects are the broker dropping a
         # slow consumer, not session state being restored.
-        mqtt:
-          max_mqueue_len: 10000
+        # Correct location is `emqxConfig`, and two earlier placements were
+        # silently ignored while the Application still reported Synced:
+        #
+        #   1. a top-level `mqtt: {max_mqueue_len: 10000}` key -- the chart only
+        #      renders recognised top-level values, so this produced no env var.
+        #   2. an `env: [{name: EMQX_MQTT__MAX_MQUEUE_LEN, ...}]` list -- also
+        #      not a key this chart reads.
+        #
+        # emqx/values.yaml documents `emqxConfig` as "EMQX configuration item"
+        # holding exactly these EMQX_-prefixed names, and it is what produces
+        # every entry in configmap/emqx-env.
+        #
+        # Worth stating plainly: the entire D34 throughput win came from raising
+        # the CPU limit. This setting was NOT in effect while that was measured,
+        # and the mailbox overflow was still firing at 6000 msg/s. So 100% at
+        # 4000 msg/s was achieved on CPU alone, and this is headroom on top.
+        # The key is `force_shutdown.max_mailbox_size`, NOT
+        # `mqtt.max_mqueue_len`. The disconnects name themselves:
+        #
+        #   check_oom_shutdown, shutdown: #{max => 1000,
+        #     reason => mailbox_overflow, value => 1063}
+        #   supervisor: {esockd_connection_sup,...},
+        #     errorContext: connection_shutdown
+        #
+        # `esockd_connection_sup` is the socket-process supervisor, so this is
+        # EMQX's socket mailbox ceiling, governed by
+        # `force_shutdown.max_mailbox_size` (default 1000). `mqtt.max_mqueue_len`
+        # is the session's queued-message limit and changing it has no effect on
+        # this path -- verified, it stayed at `max => 1000` after a restart.
+        #
+        # So: three wrong placements before this one, all of which the
+        # Application reported as Synced while EMQX kept rejecting connections.
+        # Three locations ignored in a row is the signal that the value was
+        # being guessed rather than read out of the error.
+        emqxConfig:
+          EMQX_FORCE_SHUTDOWN__MAX_MAILBOX_SIZE: "10000"
 
         # cpu 500m -> 1500m. The same logs show runq_overload, and the node has
         # four cores. A half-core ceiling on a broker that is the measured
