@@ -2230,3 +2230,41 @@ so neither the load generator nor VictoriaMetrics is the constraint.
 2. `kubectl taint node pi3 dedicated-` and remove the CoreDNS `NotIn [pi3]`
    affinity so DNS spreads across all five again.
 3. Scale Benthos back to 5 and re-run this ladder.
+
+### Five-node re-baseline (after pi3's WiFi was restored)
+
+Taint removed, CoreDNS affinity dropped so DNS spreads across all five nodes
+again, Benthos back to 5 replicas. **16/16 preflight**, including
+`dns-per-node: pods on all 5 nodes resolve external names`.
+
+| rate | delivery (5-node) | delivery (4-node, D32) | throughput | p99 |
+|---|---|---|---|---|
+| 2000/s | **100.0%** | 100.0% | 1994 msg/s | 3776 ms |
+| 3000/s | **100.0%** | 100.0% | 2889 msg/s | 6038 ms |
+| 4000/s | **58.6%** | 64.2% | 2314 msg/s | 4928 ms |
+| 5000/s | **18.0%** | 13.8% | 871 msg/s | 3098 ms |
+
+**The fifth node did not move the knee.** Lossless at 3000, ~60% delivery at
+4000, collapsed at 5000 — the same on four nodes and on five, within run-to-run
+noise. Since Benthos runs one replica per node, the extra node does add ingest
+capacity; that the ceiling did not move locates the constraint **downstream of
+Benthos**, at EMQX or on the MQTT path into it.
+
+That is consistent with every earlier measurement: the client can generate ~26k
+msg/s, VictoriaMetrics absorbs the write side at ~141 ms p99, and Benthos forwards
+faithfully (`output_sent` always equals `input_received`, `output_error` 0). The
+only component never independently verified is EMQX.
+
+Latency attribution at 3000 msg/s on five nodes:
+
+```
+  stage                                     p50      p90       p99       max
+  publisher -> EMQX -> Benthos -> NATS      449     1224      3484      3834
+  consumer -> VictoriaMetrics                11      116       141       667
+  end to end                                358     1321      3758      3798
+```
+
+94% of p99 is ingest-side and 95% of that is in the first hop, before NATS. To
+close this properly the next step is EMQX's own dropped-message and
+subscription counters — reachable now that its dashboard is open to the LAN,
+though the API needs credentials that have not been configured.
