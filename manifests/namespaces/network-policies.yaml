@@ -210,6 +210,42 @@ spec:
       ports:
         - protocol: TCP
           port: 1883
+    # EMQX cluster traffic between its own nodes.
+    #
+    # replicaCount was raised 1 -> 3 (D36) and the cluster silently failed to
+    # form: every node reported only itself in its cluster view, and the logs
+    # carried nine `badmatch,timeout` failures from emqx_conf_sup.
+    #
+    # The cause was this file. No rule permitted traffic from the emqx namespace
+    # to itself, so the nodes could not reach each other on the cluster port
+    # (4370 for Erlang distribution/epmd, 5370 for the cluster RPC) and DNS
+    # discovery found the peers without being able to talk to them.
+    #
+    # The failure was not benign. Three unclustered brokers behind one Service
+    # is worse than one: a publisher lands on a random node while each Benthos
+    # replica holds its shared subscription on whichever node it connected to, so
+    # messages addressed to one broker are never delivered to a subscriber on
+    # another. At 7000 msg/s that measured 32% delivery with only 32 of 100
+    # devices appearing at all.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: emqx
+      ports:
+        - protocol: TCP
+          port: 4370
+        - protocol: TCP
+          port: 5370
+        - protocol: TCP
+          port: 1883
+        - protocol: TCP
+          port: 8883
+        - protocol: TCP
+          port: 8083
+        - protocol: TCP
+          port: 8084
+        - protocol: TCP
+          port: 18083
   egress:
     # Kubernetes API server.
     #

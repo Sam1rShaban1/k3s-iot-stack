@@ -14,6 +14,25 @@ spec:
     helm:
       releaseName: emqx
       values: |
+        # replicaCount stays 1. EMQX clustering was tried (D36) and measured to
+        # be actively harmful on this hardware.
+        #
+        # With replicaCount 3 and DNS discovery the nodes do form a cluster --
+        # all three report all three members -- but delivery collapses:
+        #
+        #   rate    replicaCount=1   replicaCount=3
+        #   3000/s  100.0%             2.2%
+        #   6000/s  100.0%             3.8%
+        #   7000/s   70.0%            42.4%
+        #   8000/s   65.9%             0.8%
+        #
+        # Benthos logged 288 connection losses against the cluster. Unique
+        # devices appearing per run fell to 37-63 of 100, and p99 reached 51s.
+        # Erlang distribution/mnesia state sync between three brokers on Pi 4Bs
+        # appears to cost more than the extra delivery capacity buys.
+        #
+        # The single-broker bottleneck is real and documented (D33-D35), but the
+        # remedy for it is not horizontal scaling on this hardware.
         replicaCount: 1
         # P0.3 change: NodePort -> LoadBalancer with a pinned address.
         #
@@ -120,17 +139,31 @@ spec:
         emqxConfig:
           EMQX_FORCE_SHUTDOWN__MAX_MAILBOX_SIZE: "10000"
 
-        # cpu 500m -> 1500m. The same logs show runq_overload, and the node has
-        # four cores. A half-core ceiling on a broker that is the measured
-        # bottleneck is the wrong trade; this is memory that stays bounded by the
-        # limit below.
+        # cpu 500m -> 3000m, memory 512Mi -> 1024Mi.
+        #
+        # The 1500m/512Mi ceiling was itself the bottleneck, not EMQX. Upstream
+        # benchmarks put a single EMQX node far beyond this -- order 2M msg/s and
+        # millions of connections -- while this cluster stopped being lossless
+        # around 6000-7000 msg/s. A difference of three orders of magnitude means
+        # the limit is in how the node is provisioned, not in the broker.
+        #
+        # Measured node CPU under 6000 msg/s was: pi2 474m, pi3 451m, pi4 746m,
+        # pi7 547m, raspberrypi 1940m of 4000m available. Three of five nodes sat
+        # under 20% while delivering losslessly, so the data plane had headroom
+        # and EMQX did not. Nodes have 4 cores and ~8 GB, so 3000m / 1GiB leaves
+        # room for the control plane on raspberrypi, where the hot node is
+        # k3s-server (~1.6 GB RSS) rather than anything in the data path.
+        #
+        # Kept at replicaCount 1: clustering was measured (D36) and is harmful
+        # here, costing far more in Erlang distribution overhead than a third
+        # broker adds.
         resources:
           limits:
-            cpu: 1500m
-            memory: 512Mi
+            cpu: 3000m
+            memory: 1024Mi
           requests:
-            cpu: 250m
-            memory: 256Mi
+            cpu: 500m
+            memory: 512Mi
   destination:
     server: https://kubernetes.default.svc
     namespace: emqx
