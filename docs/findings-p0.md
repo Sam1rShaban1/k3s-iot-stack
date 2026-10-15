@@ -2169,3 +2169,64 @@ Worth noting how this would have been misread: the old `efficiency` metric
 reported 164% and the corrected `delivery_ratio_pct` reported 170%, both of which
 read as "impossibly good" rather than "duplicated". The ratio being well above
 100% is the only reliable signal.
+
+---
+
+## D32 — Re-baseline on four nodes
+
+The earlier ladder (D28) was measured while Benthos ran at 1 replica and delivery
+was 164–170%, so none of it is usable. Re-measured from a clean state.
+
+### Conditions
+
+pi3's WiFi adapter could not associate after power was restored — `nmcli dev
+connect` returns *"The Wi-Fi network could not be found"* while a rescan still
+lists MVDSI at signal ~80. That is below the configuration layer, so pi3 was
+taken out of service:
+
+- tainted `pi3 dedicated=hardware-fault:NoSchedule`
+- CoreDNS replicas pinned off pi3 (`NotIn [pi3]`), so DNS is no longer poisoned
+  through the `kube-dns` round-robin
+- Benthos scaled to **4 replicas**, one each on pi2, pi4, pi7, control plane
+
+So these numbers describe a **4-node** cluster, not the 5-node topology the paper
+claims. They are a reference point for future comparison, not a replacement for a
+5-node result.
+
+### Ladder — 100 clients held constant, rate the only variable
+
+| rate | generator accuracy | delivery | throughput | p99 |
+|---|---|---|---|---|
+| 2000/s | 99.9% | **100.0%** | 1927 msg/s | 3865 ms |
+| 3000/s | 99.9% | **100.0%** | 2986 msg/s | 4134 ms |
+| 4000/s | 99.9% | **64.2%** | 2518 msg/s | 4297 ms |
+| 5000/s | 99.9% | **13.8%** | 685 msg/s | 2591 ms |
+
+**The knee is between 3000 and 4000 msg/s.** This reproduces D28's finding
+(lossless at 3000, badly degraded at 5000) on a healthy four-node cluster, so it
+was not an artefact of the degraded state.
+
+Note the shape at failure: p99 *falls* from 4297 ms to 2591 ms as delivery
+collapses to 13.8%. A path that fails by discarding reports lower latency than
+one that fails by queueing, so latency percentiles are meaningless below ~100%
+delivery and must always be read beside `delivery_ratio_pct`.
+
+### Latency attribution at 3000 msg/s (highest lossless rate)
+
+```
+  stage                                     p50      p90       p99       max
+  publisher -> EMQX -> Benthos -> NATS      607     2981      5434      5882
+  consumer -> VictoriaMetrics                11      174       350       350
+  end to end                                739     2806      5783      5808
+```
+
+Still **94% of p99 inside the ingest path**, storage 350 ms. The EMQX-versus-Benthos
+split remains unresolved (D20/D29), and the client-side ceiling is ~26k msg/s,
+so neither the load generator nor VictoriaMetrics is the constraint.
+
+### To restore the 5-node baseline
+
+1. Repair pi3's WiFi (hardware).
+2. `kubectl taint node pi3 dedicated-` and remove the CoreDNS `NotIn [pi3]`
+   affinity so DNS spreads across all five again.
+3. Scale Benthos back to 5 and re-run this ladder.
