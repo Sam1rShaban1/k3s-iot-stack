@@ -13,7 +13,15 @@ spec:
     chart: victoria-metrics-single
     helm:
       releaseName: victoriametrics
-      valuesFiles:
+      # `valueFiles`, not `valuesFiles`.
+      #
+      # ArgoCD's Application CRD uses a lowercase `f` in this key. With
+      # `valuesFiles` the whole Application is rejected with "unknown field" and
+      # is never created -- which is exactly why the VictoriaMetrics workload
+      # ran for 184 days with no ArgoCD Application owning it, invisible to
+      # drift detection and unaffected by self-heal. A silently invalid
+      # manifest looks identical to a correct one in Git.
+      valueFiles:
         - ../../files/victoriametrics-values.yaml
   destination:
     server: https://kubernetes.default.svc

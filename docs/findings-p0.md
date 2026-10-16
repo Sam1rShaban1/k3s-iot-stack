@@ -2598,3 +2598,55 @@ showed overlapping ingest p99 (2236/3561/3356 ms at 5 against 3490/2868/2184 ms 
 10), and the surplus replicas will not schedule at all -- relaxing to `preferred`
 anti-affinity leaves them Pending while one node already sits at 112% of its CPU
 limit. Kept at 5, one per node.
+
+## D38 — VictoriaMetrics ran for 184 days with no ArgoCD Application owning it
+
+Found while auditing GitOps drift. The `victoriametrics` Application is listed in
+`argocd/apps/kustomization.yaml` but did not exist in the cluster, while its
+StatefulSet had been running for 184 days. Two separate bugs stacked up.
+
+**Bug 1 — the manifest was silently invalid.** `argocd/apps/victoriametrics/application.yaml`
+used `spec.source.helm.valuesFiles`. ArgoCD's field is `valueFiles` (lowercase
+`f`). With the wrong key the whole Application is rejected with
+`unknown field "spec.source.helm.valuesFiles"` and is never created. Nothing
+downstream reported this, because an Application that is never created produces
+no error anywhere -- it just looks like a manifest that has not been applied yet.
+This is why the metrics store was outside both drift detection and self-heal for
+six months while every other workload was reconciled on schedule.
+
+Fixed to `valueFiles` (committed).
+
+**Bug 2 — the manifest does not match the running workload.** With bug 1 fixed,
+ArgoCD renders and reports a large diff, because Git and live have diverged:
+
+| | Git values | Live StatefulSet |
+|---|---|---|
+| storage class | `local-path` | `longhorn` |
+| storage size | 20Gi | 10Gi (Bound, 184d) |
+| retention | 45d | 1 month |
+| resources | 1500m / 3Gi limits | none |
+| data path | `/data` | `/storage` |
+| maxUniqueTimeseries | 2,000,000 | 3,000,000 |
+
+**Syncing this would have destroyed the store.** Changing the storage class from
+`longhorn` to `local-path` provisions a *new, empty* volume: every stored sample
+is lost, not migrated. The retention change from 1 month to 45 days would then
+multiply steady-state disk use ~45x on whatever volume follows. The limit change
+adds throttling to the metrics database, and cutting `maxUniqueTimeseries`
+rejects queries that currently succeed.
+
+So the Application was created non-auto to inspect the diff, then deleted
+without syncing. An Application left in place with `Unknown` sync status is one
+rollout away from a destructive sync if anyone enables automation or clicks Sync.
+
+**Open decision, deliberately not made unilaterally.** Which side is
+authoritative is a judgement call with real consequences: adopting Git discards
+six months of metrics and reduces query headroom, while adopting live means
+committing a 184-day-old out-of-band state that nobody reviewed. The live
+retention of 1 month is almost certainly the *wrong* long-run setting and
+retention is what bounds disk growth, so this should be fixed -- but it should be
+fixed by migrating deliberately, not by syncing a stale manifest.
+
+Note the contrast with the Prometheus work in D-series: there, a `local-path`
+PVC was the deliberate fix for an `EmptyDir` TSDB. Here the same storage class
+would be the regression.
