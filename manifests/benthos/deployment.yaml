@@ -182,11 +182,20 @@ spec:
           # test drain rate at all. Preferred keeps the spread preference -- the
           # scheduler will still place one per node first -- while allowing
           # surplus bridges to co-locate once every node holds one.
+          # `weight: 100` is mandatory under `preferred` and absent under
+          # `required` -- that schema difference made the first version of this
+          # change unappliable, and ArgoCD reported the whole sync as Failed
+          # rather than naming the field.
           preferredDuringSchedulingIgnoredDuringExecution:
-          - labelSelector:
-              matchLabels:
-                app: benthos
-            topologyKey: kubernetes.io/hostname
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: benthos
+              topologyKey: kubernetes.io/hostname
+              namespaceSelector:
+                matchLabels:
+                  name: benthos
       nodeSelector:
         kubernetes.io/arch: arm64
       tolerations:
