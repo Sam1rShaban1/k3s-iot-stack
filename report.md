@@ -1,5 +1,49 @@
 # K3s IoT Stack — Benchmark Report
 
+## Current Results (D37, authoritative)
+
+> Everything below this section predates the EMQX root-cause fixes (D34/D35) and
+> the EMQX resource correction (D37). Those sections are retained as a record of
+> the scaling study, **not** as the capacity of the system.
+
+Final ladder, 5× Pi 4B (8GB), 100 clients, EMQX at 3 CPU / 1Gi:
+
+| Target rate | Delivery | Throughput | p50 | p99 |
+|---|---|---|---|---|
+| 4000/s | **100.0%** | 3970 msg/s | 476 ms | 2335 ms |
+| 6000/s | **100.0%** | 5770 msg/s | 1087 ms | 3514 ms |
+| 7000/s | **100.0%** | 6709 msg/s | 2044 ms | 5408 ms |
+| 8000/s | **100.0%** | 6686 msg/s | 8249 ms | 13279 ms |
+| 10000/s | 67.6% | 5348 msg/s | — | — |
+| 12000/s | 74.6% | 6814 msg/s | — | — |
+
+**Throughput knee: 8000–10000 msg/s.** 8000/s confirmed at 100.0% delivery
+across four independent runs.
+
+Two defensible operating points, which are not interchangeable:
+
+* **6000 msg/s @ p99 3.5s** — 100% delivery, latency-reasonable. Recommended.
+* **8000 msg/s @ p99 13.3s** — 100% delivery, ~4× worse p99. Maximum throughput.
+
+At the 8000/s ceiling no component is CPU-saturated: EMQX uses 98m of its 3000m
+allowance, and the four busiest worker nodes sit at 15–34%. The binding
+constraint at 8000 is **queueing, not compute** (D37).
+
+What moved these numbers, in order of effect:
+
+1. `force_shutdown.max_mailbox_size: 10000` — the real EMQX setting (D35). The
+   ceiling moved 3000–4000 → 6000 msg/s.
+2. EMQX `1500m`/`512Mi` → `3000m`/`1Gi` (D37). The ceiling moved 6000 → 8000.
+3. Explicit `delivery_ratio_pct = stored / generator_published` as the loss
+   metric. Earlier efficiency figures conflated generator inaccuracy with loss.
+
+Two changes that were tried and reverted, both measured:
+
+* **EMQX clustered (3 replicas)** — forms correctly but collapses delivery to
+  2.2% at 3000 msg/s with 288 Benthos connection losses (D36).
+* **Benthos at 10 replicas** — no measurable ingest-p99 improvement, and the
+  surplus replicas will not schedule on a 5-node cluster (D37).
+
 ## Cluster Configurations
 
 | Nodes | Configuration | Pipeline |
@@ -133,6 +177,13 @@
 ---
 
 ## Key Findings
+
+> **[SUPERSEDED]** These findings describe the system *before* D34/D35/D37 and
+> undercount capacity by more than an order of magnitude. Finding 2 in
+> particular ("throughput scales linearly", topping out at ~1,966 msg/s) is
+> contradicted by the 8000 msg/s lossless result above. Retained for the scaling
+> study only.
+
 
 1. **5-node achieves 92–100% target accuracy** across all 8 scenarios, vs 4–48% for 1/2-node setups
 2. **Throughput scales linearly**: 10c_2000r = 1,966 msg/s (98.3%), 100c_2000r = 1,839 msg/s (92.0%)
