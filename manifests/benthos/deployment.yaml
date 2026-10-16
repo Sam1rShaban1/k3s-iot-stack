@@ -98,19 +98,7 @@ metadata:
   name: benthos
   namespace: benthos
 spec:
-  # 5 -> 10 replicas.
-  #
-  # D37 raised the EMQX node to 3 CPU / 1Gi, which moved throughput ceiling
-  # from 6000 to 8000 msg/s (lossless, confirmed across three runs). What the
-  # extra throughput bought was queueing, not headroom: p99 went from 3.4s at
-  # 6000 to 12-16s at 8000.
-  #
-  # Sampling pods under 8000 msg/s showed nothing CPU-saturated -- EMQX at
-  # 14m of 3000m, and Benthos absent from the top 9 consumers entirely. So the
-  # limit at 8000 is queue drain rate, not any stage's compute. Ten bridges
-  # give the shared subscription more independent drains against the same
-  # influx.
-  replicas: 10
+  replicas: 5
   selector:
     matchLabels:
       app: benthos
@@ -154,48 +142,46 @@ spec:
           name: benthos-config
       affinity:
         podAntiAffinity:
-          # Required: one bridge per node, 5 replicas across 5 nodes.
+          # `required`, one bridge per node across 5 nodes.
           #
-          # Relaxing this to `preferred` so the Deployment could scale past the
-          # node count was tried while chasing the latency tail, and reverted.
-          # Two reasons, both measured:
+          # Scaling to 10 was retried in D37 now that EMQX had 3 CPU / 1Gi
+          # (see argocd/apps/emqx/application.yaml) and the system was
+          # queueing rather than saturating. Two independent reasons it does
+          # not work here:
           #
-          #   * it does not help. A controlled 3-runs-each comparison at 5 vs
-          #     10 replicas (both counts verified) showed no significant
-          #     difference in ingest p99 -- 2236/3561/3356 ms at 5 against
-          #     3490/2868/2184 ms at 10, fully overlapping ranges.
-          #   * preferred-only does not actually spread. With it, the scheduler
-          #     placed all 5 replicas on pi2, the node with the most free
-          #     capacity, which is a worse topology than the one-per-node spread
-          #     this cluster is built around and was not the intent.
+          #   * It does not help. A controlled 3-runs-each comparison at 5 vs
+          #     10 replicas (both counts verified) showed overlapping ingest
+          #     p99: 2236/3561/3356 ms at 5 against 3490/2868/2184 ms at 10.
           #
-          # Required anti-affinity also makes an over-replica-count experiment
-          # fail loudly-ish: surplus replicas stay Pending instead of running.
-          # That is a trap in its own right -- a rollout against it times out
-          # rather than failing, and the timeout can be discarded unnoticed, so
-          # a "10 replicas" measurement can silently be a 5-replica one. That is
-          # exactly the error in D20.
-          # `required` -> `preferred`.
+          #   * It cannot even be scheduled. Relaxing to `preferred` so the
+          #     Deployment can exceed the node count leaves the surplus
+          #     replicas Pending -- "5 node(s) didn't satisfy existing pods
+          #     anti-affinity rules" -- and the cluster has no CPU room for
+          #     them regardless: one node already sits at 112% of its CPU
+          #     limit before any extra bridge is added.
           #
-          # Required anti-affinity (one bridge per node) caps this Deployment at
-          # exactly 5 replicas on a 5-node cluster, so it cannot be scaled to
-          # test drain rate at all. Preferred keeps the spread preference -- the
-          # scheduler will still place one per node first -- while allowing
-          # surplus bridges to co-locate once every node holds one.
-          # `weight: 100` is mandatory under `preferred` and absent under
-          # `required` -- that schema difference made the first version of this
-          # change unappliable, and ArgoCD reported the whole sync as Failed
-          # rather than naming the field.
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            podAffinityTerm:
-              labelSelector:
-                matchLabels:
-                  app: benthos
-              topologyKey: kubernetes.io/hostname
-              namespaceSelector:
-                matchLabels:
-                  name: benthos
+          # `preferred` also spreads worse than it appears. With it the
+          # scheduler put all 5 replicas on pi2, the node with the most free
+          # capacity, which is a worse topology than the one-per-node spread
+          # this cluster is built around.
+          #
+          # There is a trap here worth naming, because it already caused a
+          # wrong number once (D20): an over-replica-count rollout against
+          # `required` anti-affinity leaves the surplus Pending rather than
+          # failing. The rollout then times out, and the timeout can be
+          # discarded unnoticed, so a "10 replica" measurement can silently
+          # have been a 5-replica one. Always confirm the running replica
+          # count before believing a scaled result.
+          #
+          # Schema note: `preferred` requires `weight: 1-100` and nests entries
+          # under `podAffinityTerm`; `required` takes neither. Converting
+          # between them without adding the weight produces a manifest ArgoCD
+          # rejects wholesale rather than naming the offending field.
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: benthos
+            topologyKey: kubernetes.io/hostname
       nodeSelector:
         kubernetes.io/arch: arm64
       tolerations:

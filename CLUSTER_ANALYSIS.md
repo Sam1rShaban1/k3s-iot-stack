@@ -9,6 +9,12 @@
 > two disagree, `findings-p0.md` is right and this file is stale. Individual
 > superseded claims are marked **[STALE]** inline and collected in
 > [Superseded benchmark claims](#superseded-benchmark-claims) at the end.
+>
+> **Current capacity (D37, supersedes every throughput figure below):** the
+> pipeline sustains **6000 msg/s at 100% delivery with p99 3.5s**, or
+> **8000 msg/s at 100% delivery with p99 13.3s**. The knee is 8000-10000 msg/s.
+> Every throughput number in this document predates the EMQX fixes in D34/D35
+> and the resource correction in D37, and is 30x to 4x below the real figure.
 ## Prometheus Metrics + Logs + Traces + Benchmark Performance
 
 > **Generated**: 2026-06-02 | **Cluster**: 5× Raspberry Pi 4B (8GB)

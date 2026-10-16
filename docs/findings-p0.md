@@ -2502,3 +2502,99 @@ the cluster) should buy more than any further data-plane tuning.
 Note also that `mqtt.max_mqueue_len` remains at its default. It was measured as
 having no effect on this failure, and was removed rather than left set to a
 value with no demonstrated benefit.
+
+## D36 — EMQX clustering is actively harmful on this hardware
+
+Raising `replicaCount` 1 -> 3 was tried, on the reasoning that a broker cluster
+would spread delivery load. It does form correctly -- DNS discovery and the
+`emqx-headless` Service with `publishNotReadyAddresses: true` were already
+configured, and all three nodes reported all three members. Throughput got much
+worse:
+
+| rate | replicaCount 1 | replicaCount 3 |
+|---|---|---|
+| 3000/s | 100.0% | 2.2% |
+| 6000/s | 100.0% | 3.8% |
+| 7000/s | 70.0% | 42.4% |
+| 8000/s | 65.9% | 0.8% |
+
+Benthos logged 288 connection losses against the cluster, unique devices per run
+fell to 37-63 of 100, and p99 reached 51s. Erlang distribution and mnesia state
+sync between three brokers on Pi 4Bs costs far more than the extra delivery
+capacity buys.
+
+Getting the cluster to form at all also required a NetworkPolicy fix: no rule
+permitted `emqx` -> `emqx` traffic, so nodes could not reach each other on the
+cluster ports. Until that was added every node discovered its peers and then
+failed to talk to them, logging nine `badmatch,timeout` failures from
+`emqx_conf_sup`. The failure mode is worth naming -- three *unclustered* brokers
+behind one Service is worse than one, because a publisher lands on a random node
+while each Benthos replica holds its shared subscription on whichever node it
+connected to. That is why the numbers above are worse than the single-broker
+ones rather than merely different.
+
+**Reverted to `replicaCount: 1`.** The netpol rule is kept: it is correct, and
+it means a future cluster attempt fails loudly instead of silently.
+
+## D37 — The broker was never the bottleneck; its resource cap was
+
+The single-broker limit found in D33-D35 was not EMQX's capability. Upstream
+benchmarks put one EMQX node orders of magnitude beyond this workload, so the
+gap was in how the node was provisioned rather than in the broker.
+
+Raising EMQX from `1500m` / `512Mi` to `3000m` / `1024Mi`:
+
+| rate | before (D35) | after (D37) |
+|---|---|---|
+| 7000/s | 70.0% | 100.0% |
+| 8000/s | 65.9% | 100.0% |
+| 10000/s | 21.1% | 67.6% |
+| 12000/s | -- | 74.6% |
+
+Throughput ceiling moved **6000-7000 -> 8000 msg/s**, with 8000 confirmed at
+100.0% delivery across four separate runs. The 1Gi memory cap also stopped
+competing with the control plane on `raspberrypi`, which is the node carrying
+`k3s-server`.
+
+### But throughput is no longer the binding constraint -- latency is
+
+Nothing is CPU-saturated at the new ceiling. Sampled under 8000 msg/s:
+
+| node | CPU | mem |
+|---|---|---|
+| pi2 | 602m (15%) | 15% |
+| pi3 | 983m (24%) | 24% |
+| pi4 | 1381m (34%) | 34% |
+| pi7 | 503m (12%) | 12% |
+| raspberrypi (control plane) | 2400m (60%) | 60% |
+| emqx pod | 98m of 3000m | 257Mi of 1Gi |
+
+EMQX sits at 3% of its CPU allowance and a quarter of its memory. Raising the
+mailbox limit in D35 converted loss into queueing, so the extra throughput is
+paid for in latency:
+
+| rate | delivery | p99 | p50 |
+|---|---|---|---|
+| 4000/s | 100.0% | 2335 ms | 476 ms |
+| 6000/s | 100.0% | 3514 ms | 1087 ms |
+| 7000/s | 100.0% | 5408 ms | 2044 ms |
+| 8000/s | 100.0% | 13279 ms | 8249 ms |
+| 10000/s | 67.6% | -- | -- |
+
+These are two different operating points, not one capacity number:
+
+* **6000 msg/s** -- 100% delivery at p99 3.5s. The latency-reasonable choice.
+* **8000 msg/s** -- 100% delivery at p99 13.3s. Maximum throughput, ~4x worse p99.
+
+Stage attribution at 7000/s shows ingest dominates (ingest p99 11955 ms against
+storage 1753 ms in the aggregated view), consistent with queueing upstream of the
+consumer rather than at VictoriaMetrics.
+
+### Benthos was not scaled, and the reason is recorded in the manifest
+
+Ten bridges were retried once more now that EMQX was no longer the constraint.
+Two independent blockers, both measured: an earlier controlled 5-vs-10 comparison
+showed overlapping ingest p99 (2236/3561/3356 ms at 5 against 3490/2868/2184 ms at
+10), and the surplus replicas will not schedule at all -- relaxing to `preferred`
+anti-affinity leaves them Pending while one node already sits at 112% of its CPU
+limit. Kept at 5, one per node.
