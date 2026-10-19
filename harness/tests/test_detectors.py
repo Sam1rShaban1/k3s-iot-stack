@@ -462,12 +462,33 @@ output:
         self.assertIn("drifted from Git", c.detail)
 
     def test_missing_configmap_is_reported_not_raised(self):
+        """A missing ConfigMap must be reported, not raised.
+
+        The lookup is two steps: the Deployment's volume names the
+        kustomize-generated ConfigMap (which carries a content hash suffix), and
+        then that ConfigMap is read. Both steps can fail.
+        """
+        def fake(args, *a, **kw):
+            if "deployment" in args:
+                return 0, "benthos-config-abc123", ""
+            return 1, "", "not found"
+
+        result = PreflightResult()
+        with mock.patch.object(preflight, "_kubectl", side_effect=fake):
+            preflight.check_benthos_subscription(result)
+        c = next(c for c in result.checks if c.name == "benthos-shared-subscription")
+        self.assertFalse(c.ok)
+        self.assertIn("could not read", c.detail)
+        self.assertIn("benthos-config-abc123", c.detail)
+
+    def test_unresolvable_configmap_name_is_reported_not_raised(self):
+        """If the Deployment has no config volume, say so rather than crash."""
         result = PreflightResult()
         with mock.patch.object(preflight, "_kubectl", return_value=(1, "", "not found")):
             preflight.check_benthos_subscription(result)
         c = next(c for c in result.checks if c.name == "benthos-shared-subscription")
         self.assertFalse(c.ok)
-        self.assertIn("could not read", c.detail)
+        self.assertIn("could not resolve", c.detail)
 
 
 class TestPolicySelectorResolve(unittest.TestCase):
