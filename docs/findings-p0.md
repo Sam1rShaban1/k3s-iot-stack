@@ -2727,3 +2727,39 @@ the laptop and the speaker rather than at MetalLB's configuration, which is now
 correct and verified from inside the cluster. The benchmark harness does not use
 this path -- it runs against `127.0.0.1:1883` -- so no benchmark number depends
 on it.
+
+## D40 — ArgoCD control plane runs on unpullable images
+
+Found while recovering the ArgoCD outage in D39. Six workloads reference images
+from public registries that this air-gapped cluster cannot reach:
+
+| workload | image |
+|---|---|
+| argocd-server, repo-server, applicationset-controller, notifications-controller | `quay.io/argoproj/argocd:v3.3.6` |
+| argocd-redis | `public.ecr.aws/docker/library/redis:8.2.3-alpine` |
+| metallb-controller | `quay.io/metallb/controller:v0.15.3` |
+
+They are running only because those images are **already cached on whichever node
+happens to host them**. Nothing guarantees that.
+
+This was demonstrated rather than inferred. Restarting `argocd-redis` to clear
+ArgoCD's manifest cache created a new pod, which went straight to
+`ImagePullBackOff` trying to fetch `public.ecr.aws/...` — the air-gap mirror
+does not carry it, and the rollout hung with the old pod still serving. Rolled
+back to restore the single healthy replica.
+
+The practical risk: **if any of these pods dies, or reschedules to a node that
+has not already pulled the image, it cannot come back.** For `argocd-redis` or
+`argocd-repo-server` that means GitOps stops entirely, which is the same
+single point of failure that produced the D39 outage -- `argocd-redis` had
+already restarted 8 times, and CoreDNS once per pod, before the final cascade.
+
+Note the asymmetry with the rest of this repo: application images go through the
+mirror at `192.168.1.50:30500`, but the GitOps control plane images were never
+migrated to it. That is why a routine cache-clear turned into a near-outage.
+
+Remediation, not done here because it needs decisions this repo should not make
+unilaterally: mirror the control-plane images and repoint these workloads at the
+mirror, or pre-pull them onto every node so rescheduling is survivable. Adding
+this as a preflight check (flag any non-mirror image reference in a namespace
+whose pod is not currently running) would catch it before the next incident.
