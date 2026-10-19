@@ -624,3 +624,111 @@ class TestDnsPerNode(unittest.TestCase):
         c = self._run(self.CASES["never-ran"])
         self.assertFalse(c.ok)
         self.assertIn("could not test", c.detail)
+
+
+class TestArgoCdAppsSettle(unittest.TestCase):
+    """Detector class 14: an Application wedged in deletion wedges the controller.
+
+    Found on 2026-10-16 after six months of a silently dead GitOps pipeline. A
+    `longhorn` Application had carried `deletionTimestamp: 2026-04-02` since
+    April; its uninstall hook could never succeed, so the finalizer never
+    cleared and the object could not be collected. The controller retried it
+    forever, the reconcile queue filled behind it, and every other Application
+    drifted to `Unknown` with auto-sync skipped.
+
+    The cluster served traffic throughout, and nothing in preflight looked at
+    ArgoCD, so no check could see it. `Unknown` on ten objects reads like a
+    transient blip rather than a half-year stall.
+    """
+
+    def _run(self, apps, crd_present=True, list_err=""):
+        apps_json = json.dumps({"items": apps})
+
+        def fake(args, *a, **kw):
+            if "crd" in args:
+                return (0, "", "") if crd_present else (1, "", "not found")
+            if list_err:
+                return 1, "", list_err
+            return 0, apps_json, ""
+
+        result = PreflightResult()
+        with mock.patch.object(preflight, "_kubectl", side_effect=fake):
+            preflight.check_argocd_applications(result)
+        return next(c for c in result.checks if c.name == "argocd-apps-settle")
+
+    @staticmethod
+    def _ts(seconds_ago):
+        from datetime import datetime, timedelta, timezone
+        return (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()
+
+    def test_six_month_zombie_fails(self):
+        c = self._run([{
+            "metadata": {
+                "name": "longhorn",
+                "deletionTimestamp": "2026-04-02T00:00:00Z",
+                "finalizers": ["resources-finalizer.argocd.argoproj.io"],
+            },
+            "status": {},
+        }])
+        self.assertFalse(c.ok)
+        self.assertIn("longhorn", c.detail)
+        self.assertIn("deleting", c.detail)
+        self.assertIn("finalizer", c.detail.lower())
+
+    def test_recent_deletion_is_normal_churn(self):
+        c = self._run([{
+            "metadata": {"name": "old-app", "deletionTimestamp": self._ts(60),
+                         "finalizers": ["x"]},
+            "status": {},
+        }])
+        self.assertTrue(c.ok, c.detail)
+
+    def test_stale_unknown_warns_but_does_not_fail(self):
+        c = self._run([{
+            "metadata": {"name": "stuck"},
+            "status": {"sync": {"status": "Unknown"},
+                       "reconciledAt": self._ts(7200),
+                       "conditions": [{"type": "ComparisonError",
+                                       "message": "boom"}]},
+        }])
+        self.assertFalse(c.ok)
+        self.assertFalse(c.fatal)
+        self.assertIn("stuck", c.detail)
+
+    def test_recent_unknown_is_not_flagged(self):
+        c = self._run([{
+            "metadata": {"name": "settling"},
+            "status": {"sync": {"status": "Unknown"},
+                       "reconciledAt": self._ts(30)},
+        }])
+        self.assertTrue(c.ok, c.detail)
+
+    def test_synced_apps_pass(self):
+        c = self._run([
+            {"metadata": {"name": "a"}, "status": {"sync": {"status": "Synced"}}},
+            {"metadata": {"name": "b"}, "status": {"sync": {"status": "OutOfSync"}}},
+        ])
+        self.assertTrue(c.ok, c.detail)
+
+    def test_unknown_without_reconcile_stamp_uses_condition_time(self):
+        c = self._run([{
+            "metadata": {"name": "never-reconciled"},
+            "status": {"sync": {"status": "Unknown"},
+                       "conditions": [{"type": "ComparisonError",
+                                       "lastTransitionTime": self._ts(7200),
+                                       "message": "no repo"}]},
+        }])
+        self.assertFalse(c.ok)
+        self.assertFalse(c.fatal)
+        self.assertIn("never-reconciled", c.detail)
+
+    def test_absent_argocd_is_not_a_fault(self):
+        c = self._run([], crd_present=False)
+        self.assertTrue(c.ok, c.detail)
+        self.assertIn("not installed", c.detail)
+
+    def test_list_failure_warns_not_fails(self):
+        c = self._run([], list_err="forbidden")
+        self.assertFalse(c.ok)
+        self.assertFalse(c.fatal)
+        self.assertIn("forbidden", c.detail)

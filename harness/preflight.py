@@ -20,6 +20,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 # Component -> (namespace, candidate label selectors, in preference order).
@@ -914,6 +915,151 @@ spec:
         )
 
 
+ARGOCD_DELETION_STUCK_S = 900
+ARGOCD_UNKNOWN_STUCK_S = 3600
+
+
+def _parse_ts(value: Optional[str]) -> Optional[datetime]:
+    """Parse an RFC3339 timestamp from the Kubernetes API, or None."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _human_age(seconds: float) -> str:
+    if seconds >= 86400:
+        return f"{seconds / 86400:.1f}d"
+    if seconds >= 3600:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 60:.0f}m"
+
+
+def check_argocd_applications(result: PreflightResult) -> None:
+    """Detector class 14: an Application wedged in deletion wedges the controller.
+
+    Found on 2026-10-16, after six months of a silently broken GitOps pipeline.
+    A `longhorn` Application had carried `deletionTimestamp: 2026-04-02` since
+    April. Its `longhorn-uninstall` pre-delete hook would never succeed --
+    Longhorn refuses to uninstall while `deleting-confirmation-flag` is false --
+    so the finalizer was never removed and the object could not be collected.
+
+    The damage was not limited to that Application. The controller retried the
+    doomed delete forever and the reconcile queue filled behind it: every other
+    Application drifted to `Unknown`, and auto-sync was skipped with
+    "Skipping auto-sync: application status is Unknown". The cluster looked
+    fine -- pods running, requests served -- while GitOps had been dead for
+    half a year.
+
+    Nothing in this file looked at ArgoCD at all, so no check could see it.
+    `kubectl get applications` showed `Unknown` for ten objects, which reads
+    like a transient reconciliation blip rather than a six-month stall.
+
+    Two conditions are reported:
+
+      * deleting for longer than ARGOCD_DELETION_STUCK_S -- fatal. A delete
+        that has not completed in fifteen minutes is not going to; the object
+        needs its finalizers inspected by hand. This is the exact signature of
+        the longhorn zombie.
+      * `Unknown` with no reconcile for longer than ARGOCD_UNKNOWN_STUCK_S --
+        non-fatal. Some Applications sit Unknown for legitimate reasons (this
+        cluster's own `argocd` app reports a 404 on its Helm repo index), so
+        failing here would mask the real signal. It is still worth surfacing:
+        a genuinely wedged controller shows this on every Application at once.
+    """
+    # Absence of the CRD is not a fault: preflight also runs on clusters where
+    # ArgoCD is not installed.
+    code, _, _ = _kubectl(["get", "crd", "applications.argoproj.io"])
+    if code != 0:
+        result.add(Check("argocd-apps-settle", True,
+                         "ArgoCD is not installed; nothing to inspect"))
+        return
+
+    code, out, err = _kubectl(
+        ["get", "applications.argoproj.io", "-n", "argocd", "-o", "json"]
+    )
+    if code != 0:
+        result.add(Check("argocd-apps-settle", False,
+                         f"could not list Applications: {err.strip()}", fatal=False))
+        return
+    try:
+        apps = json.loads(out).get("items", [])
+    except Exception as e:  # noqa: BLE001
+        result.add(Check("argocd-apps-settle", False,
+                         f"could not parse Applications: {e}", fatal=False))
+        return
+
+    now = datetime.now(timezone.utc)
+    stuck_deleting: list[str] = []
+    stale_unknown: list[str] = []
+
+    for app in apps:
+        meta = app.get("metadata") or {}
+        name = meta.get("name", "?")
+        status = app.get("status") or {}
+
+        deleted_at = _parse_ts(meta.get("deletionTimestamp"))
+        if deleted_at is not None:
+            age = (now - deleted_at).total_seconds()
+            if age > ARGOCD_DELETION_STUCK_S:
+                finals = ",".join(meta.get("finalizers") or []) or "none"
+                stuck_deleting.append(
+                    f"{name} (deleting {_human_age(age)}, finalizers: {finals})"
+                )
+            # A recent deletion is normal churn; do not also judge its sync state.
+            continue
+
+        if (status.get("sync") or {}).get("status") != "Unknown":
+            continue
+
+        # Prefer the controller's own reconcile stamp. When it is absent, fall
+        # back to when the sync condition last changed, so an Application that
+        # has been Unknown since creation is still caught.
+        ref = _parse_ts(status.get("reconciledAt"))
+        if ref is None:
+            stamps = [
+                _parse_ts(c.get("lastTransitionTime"))
+                for c in (status.get("conditions") or [])
+                if c.get("type") in ("Synced", "ComparisonError")
+            ]
+            stamps = [t for t in stamps if t is not None]
+            ref = max(stamps) if stamps else None
+        if ref is not None and (now - ref).total_seconds() > ARGOCD_UNKNOWN_STUCK_S:
+            reason = ""
+            for c in (status.get("conditions") or []):
+                if c.get("message"):
+                    reason = c["message"].splitlines()[0][:120]
+                    break
+            stale_unknown.append(
+                f"{name} (Unknown {_human_age((now - ref).total_seconds())}"
+                + (f": {reason}" if reason else "") + ")"
+            )
+
+    if stuck_deleting:
+        result.add(Check(
+            "argocd-apps-settle", False,
+            f"{len(stuck_deleting)} Application(s) wedged in deletion: "
+            f"{'; '.join(stuck_deleting)}. A finalizer that cannot succeed keeps "
+            "the object alive and the controller retries it forever, which wedges "
+            "reconciliation for every other Application. Inspect the finalizer "
+            "before removing it.",
+        ))
+    elif stale_unknown:
+        result.add(Check(
+            "argocd-apps-settle", False,
+            f"{len(stale_unknown)} Application(s) have not reconciled in over "
+            f"{_human_age(ARGOCD_UNKNOWN_STUCK_S)}: {'; '.join(stale_unknown)}",
+            fatal=False,
+        ))
+    else:
+        result.add(Check(
+            "argocd-apps-settle", True,
+            f"all {len(apps)} Applications settled (none wedged in deletion)",
+        ))
+
+
 def run_preflight(components: bool = True) -> PreflightResult:
     result = PreflightResult()
     reachable = check_cluster_reachable(result)
@@ -929,4 +1075,5 @@ def run_preflight(components: bool = True) -> PreflightResult:
         check_benthos_subscription(result)
         check_jetstream_retention(result)
         check_airgap_images(result)
+        check_argocd_applications(result)
     return result
