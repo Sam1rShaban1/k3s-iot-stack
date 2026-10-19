@@ -19,3 +19,18 @@ spec:
     syncOptions:
     - CreateNamespace=true
     - RespectIgnoreDifferences=true
+    # ServerSideApply=true is required for this Application to sync at all.
+    #
+    # root manages child Applications (nats, emqx, benthos, ...). ArgoCD patches
+    # them with the kustomize-rendered manifest, which carries
+    # `metadata.resourceVersion: 0`, and the API server rejects that on a
+    # client-side patch:
+    #
+    #   applications.argoproj.io "nats" is invalid:
+    #     metadata.resourceVersion: Invalid value: 0: must be specified for an
+    #     update
+    #
+    # Server-side apply tolerates resourceVersion 0 (it is the documented way to
+    # express "no opinion on the current version"), so this unblocks the sync
+    # rather than working around the field by hand-editing the cluster.
+    - ServerSideApply=true
