@@ -2650,3 +2650,80 @@ fixed by migrating deliberately, not by syncing a stale manifest.
 Note the contrast with the Prometheus work in D-series: there, a `local-path`
 PVC was the deliberate fix for an `EmptyDir` TSDB. Here the same storage class
 would be the regression.
+
+## D39 — MetalLB was never slow; the Service had no address at all
+
+Symptom: dialling `192.168.1.241:18083` from the workstation took ~3.1 s and
+then failed, while the *same* EMQX dashboard on the node IP answered in 8 ms.
+That reads exactly like "MetalLB is slow", and it is worth writing down why it
+was not.
+
+### What actually happened
+
+The EMQX Service had **no IP assigned, ever**. `kubectl get svc emqx` showed
+`EXTERNAL-IP <pending>` with an empty `status.loadBalancer`, and
+`192.168.1.241` belonged to nobody.
+
+The controller log gives the reason, repeating on every reconcile:
+
+```
+{"error":"service can not have both metallb.io/loadBalancerIPs and
+          svc.Spec.LoadBalancerIP","msg":"IP allocation failed"}
+```
+
+The Service set its address **twice**: `spec.loadBalancerIP: 192.168.1.241` came
+from the Helm values in `argocd/apps/emqx/application.yaml`, and a
+`metallb.io/loadBalancerIPs: 192.168.1.241` annotation had been added
+out-of-band as a fallback. MetalLB refuses that combination rather than picking
+one, so it allocated nothing.
+
+So the ~3.1 s was never service latency. It was the client's ARP request for
+`192.168.1.241` going unanswered, retried until it timed out. The signature that
+gave it away: `connect=0.000000` with a non-zero time-to-first-byte, which is
+impossible for a real slow service.
+
+Fixed by removing the deprecated `spec.loadBalancerIP` and declaring the pin in
+Git via `service.annotations.metallb.io/loadBalancerIPs`. MetalLB now assigns the
+address and the VIP serves correctly **from inside the cluster**.
+
+### Two more invalid manifests found
+
+`argocd/apps/metallb/application.yaml` passed `files/metallb-config.yaml` to the
+chart as `valuesFiles`. That is wrong twice over:
+
+* the ArgoCD field is `valueFiles`, not `valuesFiles` (the same typo exists in
+  `argocd/apps/victoriametrics/application.yaml`, see D38);
+* more fundamentally the file is **not a Helm values file at all** -- it is a
+  multi-document manifest of `IPAddressPool` and `L2Advertisement` custom
+  resources. Feeding CRs to Helm as values cannot create them.
+
+The live Application had only `{"releaseName":"metallb"}`, so the chart installed
+while the pool was never defined. Moved to `manifests/metallb/metallb-config.yaml`
+and applied by the root kustomize alongside `manifests/namespaces`, which is how
+plain manifests belong in this repo.
+
+### Why nginx would be strictly worse
+
+Worth recording, because the instinct after seeing a slow load balancer is to
+replace it. MetalLB operates at **layer 2**: it answers ARP for a pool address on
+a chosen interface and then gets out of the way. The packet is delivered straight
+to the backend pod's MAC -- no proxy, no extra hop, no per-packet work.
+
+nginx would insert a genuine L4/L7 proxy hop: two copies and a syscall per
+packet, a new CPU consumer on a Raspberry Pi that is already the hottest node in
+the cluster, and an additional failure domain. It cannot be faster, because
+there is no MetalLB cost to beat -- the 3.1 s was an ARP timeout caused by a
+Service that had never been assigned an address.
+
+It also would not have fixed this particular problem, since nginx would need its
+own reachable address and would inherit the same L2 reachability question.
+
+### Still open
+
+From the workstation the VIP now resolves ARP intermittently and then fails with
+`No route to host`, while every node's `wlan0` sits on `192.168.1.0/24` and the
+node IPs themselves answer in 5-17 ms. That points at the wireless segment between
+the laptop and the speaker rather than at MetalLB's configuration, which is now
+correct and verified from inside the cluster. The benchmark harness does not use
+this path -- it runs against `127.0.0.1:1883` -- so no benchmark number depends
+on it.

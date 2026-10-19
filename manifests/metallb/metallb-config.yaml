@@ -1,3 +1,30 @@
+# MetalLB address pool and L2 advertisement for LAN-facing Services.
+#
+# These were previously passed to the `metallb` Helm chart via
+# `spec.source.helm.valuesFiles` in argocd/apps/metallb/application.yaml. That
+# could never work, for two independent reasons:
+#
+#   * The ArgoCD field is `valueFiles`, not `valuesFiles`. (The same typo was
+#     independently present in argocd/apps/victoriametrics/application.yaml --
+#     see D38.)
+#   * More fundamentally, this file is not a Helm values file at all. It is a
+#     multi-document manifest containing IPAddressPool and L2Advertisement
+#     custom resources. Handing CRs to Helm as values does nothing.
+#
+# The live Application had only `{"releaseName": "metallb"}`, so the pool was
+# never created even once the chart installed cleanly. With no pool, the EMQX
+# Service of type LoadBalancer had no address assigned at all:
+#
+#   $ kubectl get svc emqx -n emqx -o jsonpath='{.status.loadBalancer.ingress}'
+#   (empty)
+#
+# which made 192.168.1.241 belong to nobody. Clients dialling it got an ARP
+# failure that only resolved into a ~3s TCP connect timeout -- the "MetalLB is
+# mysteriously slow" symptom. It was never slow; it was absent.
+#
+# A Helm-only Application source cannot also apply plain repo manifests, so
+# these CRs are applied as manifests by the root kustomize
+# (argocd/apps/kustomization.yaml) alongside manifests/namespaces.
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:

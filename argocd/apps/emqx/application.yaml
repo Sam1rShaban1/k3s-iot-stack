@@ -53,8 +53,28 @@ spec:
         # metallb.io/loadBalancerIPs and record the deviation.
         service:
           type: LoadBalancer
-          loadBalancerIP: 192.168.1.241
+          # NO `loadBalancerIP` here -- deliberately.
+          #
+          # The IP is pinned via the `metallb.io/loadBalancerIPs` annotation
+          # below, in this file. Both were set at once, and MetalLB hard-fails
+          # on exactly that combination rather than picking one:
+          #
+          #   {"error":"service can not have both metallb.io/loadBalancerIPs
+          #     and svc.Spec.LoadBalancerIP",
+          #    "msg":"IP allocation failed", ...}
+          #
+          # The result was a Service stuck at `EXTERNAL-IP <pending>` with an
+          # empty status.loadBalancer, repeating that error every reconcile.
+          # Nothing listened on 192.168.1.241, so clients dialling the broker
+          # got an ARP failure that only resolved into a ~3s TCP connect
+          # timeout. That is what looked like "MetalLB is mysteriously slow":
+          # it was not slow, it had never been assigned the address.
+          #
+          # The annotation alone is sufficient and is the mechanism current
+          # MetalLB documents, so the deprecated field is dropped rather than
+          # worked around.
           annotations:
+            metallb.io/loadBalancerIPs: 192.168.1.241
             # K3s ships a built-in LoadBalancer controller (klipper-lb, the
             # rancher svclb-* DaemonSet) AND this cluster also runs MetalLB.
             # Both watch LoadBalancer Services, and they fought over this one:

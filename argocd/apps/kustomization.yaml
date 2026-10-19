@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
   - ../../manifests/namespaces
+  - ../../manifests/metallb
   - metallb/application.yaml
   - longhorn/application.yaml
   - nats/application.yaml
