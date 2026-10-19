@@ -40,19 +40,21 @@ import json
 import os
 import sys
 
-SERIES = ("ts", "benthos_entry_ts", "nats_exit_ts", "vm_write_ack_ts",
-          "latency_ms")
+SERIES = ("ts", "benthos_entry_ts", "nats_exit_ts", "consumer_queue_ms",
+          "vm_write_ack_ts", "latency_ms")
 
 STAGE_LABELS = {
     "publish_to_benthos": "publisher -> Benthos (MQTT+broker)",
-    "benthos_to_nats": "Benthos -> NATS",
+    "benthos_to_nats": "Benthos -> NATS (JetStream)",
+    "consumer_queue": "consumer in-process queue",
     "ingest": "publisher -> NATS (combined)",
     "write": "consumer -> VictoriaMetrics",
     "total": "end to end",
 }
 
 # Order matters only for display: the two sub-stages then their sum.
-STAGE_ORDER = ("publish_to_benthos", "benthos_to_nats", "ingest", "write")
+STAGE_ORDER = ("publish_to_benthos", "benthos_to_nats", "consumer_queue",
+              "ingest", "write")
 
 
 def load(raw_dir: str, scenario: str) -> dict:
@@ -91,6 +93,7 @@ def analyse(raw_dir: str, scenario: str) -> dict:
     data = load(raw_dir, scenario)
     publish_to_benthos: list[float] = []
     benthos_to_nats: list[float] = []
+    consumer_queue: list[float] = []
     ingest: list[float] = []
     write: list[float] = []
     total: list[float] = []
@@ -101,6 +104,7 @@ def analyse(raw_dir: str, scenario: str) -> dict:
         nats = data["nats_exit_ts"].get(device) or {}
         ack = data["vm_write_ack_ts"].get(device) or {}
         lat = data["latency_ms"].get(device) or {}
+        queue = data["consumer_queue_ms"].get(device) or {}
         for wtime, ts_ms in stamps.items():
             entry_ms = entry.get(wtime)
             exit_ms = nats.get(wtime)
@@ -114,9 +118,15 @@ def analyse(raw_dir: str, scenario: str) -> dict:
                 if delta >= 0:
                     ingest.append(delta)
             ack_ms = ack.get(wtime)
+            q_ms = queue.get(wtime)
+            if q_ms is not None and q_ms >= 0:
+                consumer_queue.append(q_ms)
             if ack_ms is not None:
-                if exit_ms is not None and ack_ms - exit_ms >= 0:
-                    write.append(ack_ms - exit_ms)
+                # The write stage excludes the consumer's own queueing, which
+                # is reported separately.
+                base = exit_ms - q_ms if (exit_ms is not None and q_ms is not None) else exit_ms
+                if base is not None and ack_ms - base >= 0:
+                    write.append(ack_ms - base)
                 if ack_ms - ts_ms >= 0:
                     total.append(ack_ms - ts_ms)
             lat_ms = lat.get(wtime)
@@ -128,6 +138,7 @@ def analyse(raw_dir: str, scenario: str) -> dict:
         "aligned": len(ingest),
         "publish_to_benthos": publish_to_benthos,
         "benthos_to_nats": benthos_to_nats,
+        "consumer_queue": consumer_queue,
         "ingest": ingest,
         "write": write,
         "total": total,

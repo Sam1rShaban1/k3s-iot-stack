@@ -26,12 +26,18 @@ METRIC_LATENCY = "iot_sensor_latency_ms"
 METRIC_SENSOR_TS = "iot_sensor_ts"
 METRIC_NATS_EXIT = "iot_sensor_nats_exit_ts"
 METRIC_VM_ACK = "iot_sensor_vm_write_ack_ts"
-# Stage series. `benthos_entry_ts` is stamped by the Benthos mapping; the other
-# two are derived by the consumer so the split is queryable directly.
+# Stage series. Only two are emitted by the consumer:
+#
+#   benthos_entry_ts   stamped by Benthos and carried as a NATS header
+#   consumer_queue_ms  how long the consumer held the message before writing
+#
+# The remaining stages are DERIVED by harness/stage_latency.py from these
+# timestamps plus ts/nats_exit_ts/vm_write_ack_ts. They were emitted as
+# series too, and that was a mistake: every extra series per message is
+# another line in the POST body, and the consumer -- not the broker -- is what
+# runs out of headroom first at 8000 msg/s.
 METRIC_BENTHOS_ENTRY = "iot_sensor_benthos_entry_ts"
-METRIC_PUBLISH_TO_BENTHOS = "iot_sensor_publish_to_benthos_ms"
-METRIC_BENTHOS_TO_NATS = "iot_sensor_benthos_to_nats_latency_ms"
-METRIC_NATS_TO_VM = "iot_sensor_nats_to_vm_ms"
+METRIC_CONSUMER_QUEUE = "iot_sensor_consumer_queue_ms"
 METRIC_TEMP = "iot_sensor_temp"
 METRIC_HUM = "iot_sensor_hum"
 METRIC_PM25 = "iot_sensor_pm25"
@@ -43,9 +49,7 @@ ALL_METRICS = [
     METRIC_NATS_EXIT,
     METRIC_VM_ACK,
     METRIC_BENTHOS_ENTRY,
-    METRIC_PUBLISH_TO_BENTHOS,
-    METRIC_BENTHOS_TO_NATS,
-    METRIC_NATS_TO_VM,
+    METRIC_CONSUMER_QUEUE,
     METRIC_TEMP,
     METRIC_HUM,
     METRIC_PM25,

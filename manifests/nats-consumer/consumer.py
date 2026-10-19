@@ -148,17 +148,27 @@ def format_metrics(data, nats_exit_ts):
     quantity the paper claims to measure end to end. See format_metrics_ack.
     """
     device = data.get("device_id", "unknown")
-    data["nats_exit_ts"] = nats_exit_ts
-    if "benthos_entry_ts" in data:
-        data["benthos_to_nats_latency_ms"] = nats_exit_ts - data["benthos_entry_ts"]
-        sensor_ts = data.get("ts")
-        if sensor_ts is not None:
-            # The stage the probe work finally unlocked: how long the message
-            # spent between the publisher stamping `ts` and Benthos seeing it.
-            # That span covers the MQTT publish, the broker's queueing and the
-            # bridge's delivery, which the old two-way split could not separate
-            # from Benthos -> NATS.
-            data["publish_to_benthos_ms"] = data["benthos_entry_ts"] - sensor_ts
+    # `nats_exit_ts` is stamped when the message is FETCHED from JetStream, not
+    # when it is processed. The two are not the same moment: fetched messages
+    # wait in an in-process queue until the batch writer reaches them, and at
+    # 8000 msg/s that wait is large enough to dominate the measurement. Stamping
+    # at process time made the "Benthos -> NATS" stage absorb the consumer's
+    # own backlog, which is how a 19-second p99 got attributed to the wrong
+    # place. The fetch-time stamp is what the name says it is.
+    #
+    # The gap between the two is the consumer's own queueing, and it is
+    # published separately as `consumer_queue_ms`.
+    fetch_ts = data.get("nats_exit_ts")
+    if fetch_ts is None:
+        data["nats_exit_ts"] = nats_exit_ts
+    else:
+        data["consumer_queue_ms"] = nats_exit_ts - fetch_ts
+    # Only `benthos_entry_ts` and `consumer_queue_ms` are added. The other
+    # stage series are derivable from the raw timestamps by
+    # harness/stage_latency.py, which is where the split is actually analysed.
+    # Emitting them as well cost four extra series per message -- and the
+    # consumer, not the broker, is what runs out of headroom first: at 8000
+    # msg/s it went from 1352m to 2507m of CPU.
     return _render(data, device)
 
 def format_metrics_ack(data, ack_ts):
@@ -182,12 +192,7 @@ def format_metrics_ack(data, ack_ts):
     sensor_ts = data.get("ts")
     if sensor_ts is not None:
         data["latency_ms"] = ack_ts - sensor_ts
-    # `nats_exit_ts` was added to the same dict by format_metrics, so the final
-    # hop can be measured here without re-emitting any pass-1 series.
-    if "nats_exit_ts" in data:
-        data["nats_to_vm_ms"] = ack_ts - data["nats_exit_ts"]
-    return _render(data, device, only=("vm_write_ack_ts", "latency_ms",
-                                       "nats_to_vm_ms"))
+    return _render(data, device, only=("vm_write_ack_ts", "latency_ms"))
 
 def _render(data, device, only=None):
     lines = []
@@ -342,7 +347,23 @@ async def main():
                     continue
                 for msg in msgs:
                     try:
-                        batch_queue.append((msg, json.loads(msg.data.decode())))
+                        data = json.loads(msg.data.decode())
+                        # The stage stamp arrives as a NATS header, not in the
+                        # payload. Benthos adds it with
+                        #   headers: {benthos_entry_ts: '${! timestamp_unix_nano() }'}
+                        # so the payload is never re-serialised -- adding a
+                        # payload field instead cost 47% of Benthos's CPU and
+                        # took the pipeline from 86.4% delivery to 39.1% at
+                        # 8000 msg/s. The header is nanoseconds; every other
+                        # timestamp here is milliseconds.
+                        entry_ns = (getattr(msg, "headers", None) or {}).get(
+                            "benthos_entry_ts")
+                        if entry_ns is not None:
+                            data["benthos_entry_ts"] = int(entry_ns) // 1000000
+                        # Stamped here, at receipt, so the consumer's own
+                        # queueing can be separated from the pipeline's.
+                        data["nats_exit_ts"] = now_ms()
+                        batch_queue.append((msg, data))
                     except Exception as e:
                         print("Err: %s" % e)
                         try:

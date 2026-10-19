@@ -181,41 +181,51 @@ class TestNoDuplicatedSeries(unittest.TestCase):
         second = ns["format_metrics_ack"](dict(self.MESSAGE), 1250)
         self.assertIn('iot_sensor_latency_ms{device_id="d1"} 250', second)
 
-    def test_stage_split_from_benthos_entry(self):
-        """With an entry stamp, pass 1 must expose both halves of ingest.
+    def test_entry_stamp_is_emitted_verbatim(self):
+        """The stamp arrives as a header and is published as-is.
 
-        This is the split the earlier instrumentation attempts could not
-        produce: without it, publisher+broker and Benthos->NATS are one number.
+        The stage series are NOT emitted here. They are derived by
+        harness/stage_latency.py from the raw timestamps, because every extra
+        series per message is another line in the VictoriaMetrics POST body.
         """
         ns = self._functions()
         msg = dict(self.MESSAGE)
         msg["benthos_entry_ts"] = 1004
         first = ns["format_metrics"](msg, 1817)
         self.assertIn(
-            'iot_sensor_publish_to_benthos_ms{device_id="d1"} 4', first)
-        self.assertIn(
-            'iot_sensor_benthos_to_nats_latency_ms{device_id="d1"} 813', first)
+            'iot_sensor_benthos_entry_ts{device_id="d1"} 1004', first)
 
-    def test_no_stage_series_without_an_entry_stamp(self):
-        """A message that predates the instrumentation must not emit junk."""
-        ns = self._functions()
-        first = ns["format_metrics"](dict(self.MESSAGE), 1817)
-        self.assertNotIn("iot_sensor_publish_to_benthos_ms", self._names(first))
-        self.assertNotIn(
-            "iot_sensor_benthos_to_nats_latency_ms", self._names(first))
-
-    def test_ack_pass_measures_the_last_hop(self):
-        """nats_exit_ts is on the same dict, so the final hop is measurable."""
+    def test_no_derived_stage_series_are_emitted(self):
+        """The consumer must not re-publish what stage_latency derives."""
         ns = self._functions()
         msg = dict(self.MESSAGE)
-        msg["nats_exit_ts"] = 1817
-        second = ns["format_metrics_ack"](msg, 1821)
-        self.assertIn('iot_sensor_nats_to_vm_ms{device_id="d1"} 4', second)
-        self.assertEqual(
-            self._names(second),
-            {"iot_sensor_vm_write_ack_ts", "iot_sensor_latency_ms",
-             "iot_sensor_nats_to_vm_ms"},
-        )
+        msg["benthos_entry_ts"] = 1004
+        first = ns["format_metrics"](msg, 1817)
+        for name in ("publish_to_benthos_ms", "benthos_to_nats_latency_ms",
+                     "nats_to_vm_ms"):
+            self.assertNotIn("iot_sensor_" + name, self._names(first))
+
+    def test_consumer_queue_is_measured_against_the_fetch_stamp(self):
+        """nats_exit_ts is stamped at FETCH, so the gap is the queue delay.
+
+        Stamping at process time instead made the "Benthos -> NATS" stage
+        absorb the consumer's own backlog, which is how a 19-second p99 got
+        attributed to the wrong place.
+        """
+        ns = self._functions()
+        msg = dict(self.MESSAGE)
+        msg["nats_exit_ts"] = 1817          # stamped when fetched
+        first = ns["format_metrics"](msg, 1821)   # stamped when processed
+        self.assertIn('iot_sensor_consumer_queue_ms{device_id="d1"} 4', first)
+        # The fetch stamp must survive: it is the basis of the split.
+        self.assertIn('iot_sensor_nats_exit_ts{device_id="d1"} 1817', first)
+
+    def test_no_queue_series_without_a_fetch_stamp(self):
+        """A message that predates the split must not emit a bogus queue."""
+        ns = self._functions()
+        first = ns["format_metrics"](dict(self.MESSAGE), 1817)
+        self.assertNotIn("iot_sensor_consumer_queue_ms", self._names(first))
+        self.assertIn('iot_sensor_nats_exit_ts{device_id="d1"} 1817', first)
 
     def test_render_respects_the_only_filter(self):
         ns = self._functions()

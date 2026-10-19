@@ -1,0 +1,92 @@
+http:
+  address: 0.0.0.0:4195
+  enabled: true
+
+input:
+  mqtt:
+    urls:
+      - tcp://emqx.emqx.svc.cluster.local:1883
+    topics:
+      - $share/benthos/sensors/#
+    client_id: benthos-consumer-${HOSTNAME}
+    qos: 1
+    # clean_session: true -- explicit, because the default leaves broker-side
+    # session state behind for a subscriber that reconnects dozens of times a
+    # minute.
+    #
+    # Measured at 4000 msg/s (D33): EMQX recorded 128 sessions created and
+    # 128 terminated in 45s, each replica logged 5-6 input_connection_lost,
+    # and 43,746 messages vanished between messages.received (178,667) and
+    # messages.delivered (132,246) that EMQX attributed to no counter at
+    # all -- including only 2,675 as dropped.no_subscribers.
+    #
+    # Benthos is stateless here: it acks nothing upstream, resumes nothing on
+    # reconnect, and holds no durable state. A persistent session buys
+    # nothing and costs broker-side bookkeeping on every reconnect. QoS 0
+    # means there is no in-flight window to preserve either.
+    clean_session: true
+    keepalive: 60
+
+# Stage instrumentation: stamp each message as it enters Benthos, so the
+# end-to-end latency can be split into publisher -> EMQX -> Benthos and
+# Benthos -> NATS instead of one opaque "ingest" number.
+#
+# This took three attempts, and the reason the first two failed was never
+# guessed correctly. It was measured: a probe Benthos instance subscribed to
+# `$share/probe/sensors/#` (a separate shared group, so it gets its own copy
+# and cannot steal pipeline traffic) and logged `this.type()` for real
+# publisher output. The result was `object`, not `string`.
+#
+# That one fact explains both earlier failures:
+#
+#   * `root = this.parse_json()` errored with "expected string value, got
+#     object from field 'this'" because `this` is ALREADY an object -- the
+#     MQTT input parses JSON payloads itself.
+#   * `root.benthos_entry_ts = <ts>` alone collapsed the message to a single
+#     field, because the mapping ROOT is still the raw payload even though
+#     `this` reads as an object. Assigning into raw bytes coerces it to an
+#     object holding only the assigned key, so the consumer received no
+#     device_id and stored=0 -- with every pod Running and preflight green.
+#
+# Binding `root = this` first makes the root object exist; the subsequent
+# field assignment then merges into it. Verified on the live broker: output
+# retained device_id/ts/pm1/pm25/pm10/temp/hum and gained benthos_entry_ts,
+# with entry-minus-publisher of 4-6 ms at 5 msg/s.
+#
+# Assumption: every message is a JSON object. That holds for this pipeline
+# (publisher.c is the only producer). A non-object on the shared topic would
+# be collapsed and dropped downstream rather than passed through.
+#
+# Note: `timestamp_unix_milli()` does not exist in Benthos 4.1.0; the
+# available function is `timestamp_unix_nano()`, hence the division.
+pipeline:
+  # No payload processors.
+  #
+  # The stage stamp is carried as a NATS header on the output below, so the
+  # payload is never re-serialised. Adding it as a payload field instead cost
+  # 47% of Benthos's CPU and took the pipeline from 86.4% delivery to 39.1% at
+  # 8000 msg/s. See docs/findings-p0.md D44.
+  processors: []
+
+output:
+  nats:
+    urls:
+      - nats://nats.nats.svc.cluster.local:4222
+    subject: iot.data
+    max_in_flight: 5000
+    # The stage stamp travels as a NATS header, not as a payload field.
+    #
+    # The obvious way to timestamp the message is a Bloblang processor that
+    # adds `benthos_entry_ts` to the payload. That re-serialises every
+    # message's JSON, and the cost was measured rather than assumed: at
+    # 8000 msg/s it took Benthos from 1868m to 2740m CPU and the whole run
+    # from 86.4% delivery to 39.1%. The instrumentation was costing more
+    # than half the pipeline it was instrumenting.
+    #
+    # A header costs nothing: the payload bytes are untouched, and the
+    # consumer reads the stamp from the message headers. Verified end to end
+    # on the live broker -- the payload arrived with only the original fields
+    # and the header carried a distinct per-message nanosecond stamp.
+    headers:
+      benthos_entry_ts: '${! timestamp_unix_nano() }'
+    

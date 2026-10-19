@@ -3,3 +3,29 @@ kind: Kustomization
 
 resources:
   - deployment.yaml
+
+# Matches nats-consumer. Also required for kustomize to rewrite the generated
+# ConfigMap name in the Deployment's volume: a generator in the default
+# namespace will not be linked into a namespaced workload.
+namespace: benthos
+
+# The ConfigMap is generated from benthos.yaml, which is the source of truth.
+#
+# It used to be an inline ConfigMap in deployment.yaml, mounted with `subPath`.
+# Two consequences, both observed on 2026-10-19:
+#
+#   * `subPath` mounts never update in place, so editing the ConfigMap did not
+#     reach running pods;
+#   * without a content hash the pod template did not change either, so no
+#     rollout was triggered. Applying the stage-instrumentation change rolled
+#     four of five replicas (for unrelated reasons) and left one running the
+#     old config, which would have produced a silent mix of stamped and
+#     unstamped messages.
+#
+# A generated ConfigMap keeps the hash suffix, kustomize rewrites the volume
+# reference, and the template changes -- so an edit always produces a real
+# rollout. Same arrangement as nats-consumer.
+configMapGenerator:
+  - name: benthos-config
+    files:
+      - benthos.yaml

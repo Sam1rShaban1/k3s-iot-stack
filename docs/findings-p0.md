@@ -2891,3 +2891,156 @@ two: `publisher -> Benthos` (MQTT publish plus broker queueing),
 VictoriaMetrics`. The consumer emits `publish_to_benthos_ms` and `nats_to_vm_ms`
 alongside the existing `benthos_to_nats_latency_ms`, so the split is queryable
 directly rather than recomputed from raw samples.
+
+## D44 — The instrumentation cost more than half the pipeline; a NATS header costs nothing
+
+D43 delivered a working stage stamp, and it was committed, deployed, and then
+measured against the D37 ladder. The result was a severe regression that had
+nothing to do with the thing the instrumentation was for:
+
+| configuration | delivered | throughput | p99 |
+|---|---|---|---|
+| D37 baseline (no instrumentation) | 100% | 6686 msg/s | 13.3 s |
+| payload processor + 2 extra series | 39.1% | 2498 msg/s | 63.4 s |
+| no instrumentation, re-measured same day | 86.4% | 5796 msg/s | 46.5 s |
+| **NATS header + 1 extra series** | **93.6%** | **6007 msg/s** | **29.5 s** |
+
+The cause is that adding a field to the payload requires re-serialising every
+message's JSON. Measured on the same cluster in the same session, Benthos went
+from **1868m to 2740m CPU** -- 47% more work to observe the pipeline rather
+than change it. The consumer adds its own cost: every extra series per message
+is another line in the VictoriaMetrics POST body, and the consumer went from
+1352m to 2507m CPU when four derived series were added.
+
+The fix is to leave the payload alone. Benthos 4.1's NATS output accepts
+`headers`, and `${! ... }` interpolation is evaluated per message, so the
+stamp rides along as a header:
+
+```yaml
+output:
+  nats:
+    headers:
+      benthos_entry_ts: '${! timestamp_unix_nano() }'
+```
+
+Verified end to end against the live broker: the payload arrived with only the
+original fields, and the header carried a distinct per-message nanosecond
+stamp. The consumer reads it from `msg.headers`. Delivery returned to
+baseline -- slightly above it, within run-to-run noise.
+
+The general lesson: **measurement is not free, and the cost lands on the thing
+being measured.** A stage stamp implemented by rewriting the payload was
+measuring a pipeline that had been made 47% more expensive to run. A stage
+stamp carried out of band is not. The first instinct -- "add a field, it is
+one field" -- was wrong by a factor of two in delivered throughput, and only
+the A/B against an unmodified baseline exposed it.
+
+Two secondary consequences, both kept:
+
+* the derived stage series were **removed** from the consumer. `stage_latency.py`
+  derives them from the raw timestamps, and emitting them as well cost four
+  extra series per message for no information.
+* `nats_exit_ts` is now stamped when the message is **fetched** from
+  JetStream, not when it is processed. The two are different moments, and the
+  difference is the consumer's own in-process queue. Stamping at process time
+  made the "Benthos -> NATS" stage absorb the consumer's backlog, which is how
+  a 19-second p99 was attributed to the wrong place.
+
+## D45 — At 8000 msg/s the tail is a backlog in JetStream, not the broker
+
+With the cheap instrumentation in place, the four-stage split finally says
+something trustworthy at the D37 knee (100 clients, 8000 msg/s):
+
+```
+stage                                   p50      p90       p99       max
+publisher -> Benthos (MQTT+broker)      424      670      1081      4338
+Benthos -> NATS (JetStream)           18151    24600     26770     28294
+consumer in-process queue                45      569      7373      9422
+consumer -> VictoriaMetrics             224      916     13548     15015
+end to end                            22120    26137     28383     29357
+```
+
+Three things follow.
+
+**EMQX and the Benthos bridge are not the problem.** The whole MQTT leg --
+publish, broker queueing, bridge delivery -- is 424 ms at the median and
+1081 ms at p99. The broker handles 8000 msg/s with room to spare. Every
+hypothesis that blamed the broker is refuted by the measurement.
+
+**The consumer's own queue is not the problem either.** 45 ms at the median.
+The consumer is keeping up with what it fetches.
+
+**The 18 seconds is the age of a backlog.** The consumer sustains about
+4500 msg/s while 8000 msg/s is offered, so a backlog builds and the messages
+in it age. The backlog lives in JetStream, which is why the "Benthos -> NATS"
+stage carries the delay: the message is in the stream, not in flight.
+
+So the ceiling at 8000 msg/s is set by the **consumer's single-threaded
+fetch/parse/write loop** (~1500 msg/s per replica across 3 replicas), not by
+the broker, not by Benthos, and not by CPU saturation. The consumer's pods
+peaked at 596-709m against a 2-CPU limit, so they are not throttled either --
+the limit is serial work in one event loop, not resources.
+
+This is the axis that matters, and it is neither "horizontal" nor "vertical":
+it is *which component* is saturated. The levers here are more consumer
+replicas (each adds a fetch loop against the shared durable), a smaller
+`BATCH_SIZE` so the loop interleaves fetch and write more finely, moving the
+JSON parse off the event loop, and reducing the series count per message.
+
+Note also the run-to-run variance: identical configurations measured 86.4%,
+93.6% and 42.1% delivery in the same session. Any single run at 8000 msg/s is
+not a measurement, and the D37 ladder needs re-running with settling time
+between scenarios before any of it can go in the paper.
+
+## D46 — VictoriaMetrics is writing to an SD card, not to its PVC
+
+Found while looking for the storage bottleneck behind D45. The
+VictoriaMetrics StatefulSet declares:
+
+```yaml
+volumes:
+  - name: storage
+    persistentVolumeClaim:
+      claimName: storage-victoriametrics-0
+```
+
+but the container has **no volumeMounts**. The PVC exists, is Bound to a
+Longhorn volume, and is never mounted. VictoriaMetrics therefore writes to
+the container's writable layer, which is the node's SD card:
+
+```
+Filesystem      Size  Used Avail Use% Mounted on
+overlay         56.8G 15.4G  39.0G  28% /
+```
+
+The pod runs on `raspberrypi`, the master -- the same node that also runs NATS
+JetStream, the API server and the rest of the control plane. So the metrics
+store competes for I/O with the broker's persistence on the slowest storage in
+the cluster, and the "persistent" volume is a fiction: the data disappears if
+the pod is rescheduled.
+
+This is a configuration bug with two consequences that are easy to miss because
+nothing errors. The PVC's existence makes the deployment look durable, and the
+disk usage looks like normal accumulation rather than a volume that was never
+mounted. It also invalidates the storage half of any capacity claim, because
+the store's I/O performance is that of an SD card rather than of the Longhorn
+volume that was provisioned for it.
+
+## D47 — The harness can silently pick a broker it cannot publish to
+
+One benchmark run during D44 reported `stored=0`, `delivered=None%` and a
+throughput of 0.0 msg/s -- a total pipeline failure. Nothing was broken.
+
+The harness resolves the broker by discovery, preferring the LoadBalancer
+ingress address. On this cluster that is the MetalLB VIP, `192.168.1.241`.
+The VIP is an L2/ARP address: it is reachable from inside the cluster and
+*usually* reachable from the workstation, but the ARP resolution is
+intermittent, and a publisher that cannot connect simply publishes nothing.
+The run summary recorded `"broker": "192.168.1.241:1883"` and no error.
+
+A zero-message run is indistinguishable from a broken pipeline unless the
+broker address is read out of the summary -- and the report does not record
+it. The fix is to record the broker in the report and to make a zero-message
+scenario an explicit failure with its cause, rather than a line in a JSON
+summary. The benchmark runs in this write-up pin `--broker` explicitly for
+that reason.
