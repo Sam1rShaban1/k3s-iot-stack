@@ -27,9 +27,29 @@ spec:
     server: https://kubernetes.default.svc
     namespace: victoriametrics
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
+    # AUTOMATED SYNC IS INTENTIONALLY DISABLED HERE.
+    #
+    # This app was unreachable for 184 days (see D38: `valuesFiles` instead of
+    # `valueFiles`, so ArgoCD rejected the Application and never created it)
+    # while its StatefulSet ran unmanaged. The moment the typo was fixed, the
+    # root kustomize recreated this Application -- and with `automated` enabled
+    # and prune on, ArgoCD would have synced it on the next reconcile.
+    #
+    # Syncing it destroys the metrics store. Git and live have diverged:
+    #
+    #     Git              live
+    #     storageClass     local-path    longhorn
+    #     size             20Gi          10Gi (Bound, 184d)
+    #     retention        45d           1 month
+    #     maxUniqueSeries  2,000,000     3,000,000
+    #
+    # Changing the storage class provisions a NEW EMPTY volume: every stored
+    # sample is lost, not migrated. Retention 45d on top of that multiplies
+    # steady-state disk use ~45x.
+    #
+    # Prometheus's TSDB and 184 days of VictoriaMetrics history both sit behind
+    # this. Auto-sync stays off until the live configuration is reconciled into
+    # Git deliberately (migrate the storage, then adopt).
     syncOptions:
     - CreateNamespace=true
     - RespectIgnoreDifferences=true
