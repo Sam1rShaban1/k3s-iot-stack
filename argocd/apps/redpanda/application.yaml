@@ -11,8 +11,9 @@ spec:
     path: charts/redpanda
     helm:
       releaseName: redpanda
-      valuesFiles:
-        - ../../files/redpanda-values.yaml
+        # Disabled: `valuesFiles` is not a valid ArgoCD field and this file is
+        # a manifest of CRs, not Helm values. This app is not in the root
+        # kustomize; if it is ever enabled, inline the values as `values: |`.
   destination:
     server: https://kubernetes.default.svc
     namespace: redpanda

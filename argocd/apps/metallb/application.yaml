@@ -13,8 +13,23 @@ spec:
     chart: metallb
     helm:
       releaseName: metallb
-      valuesFiles:
-        - ../../files/metallb-config.yaml
+        # No `valuesFiles` / `valueFiles` here.
+        #
+        # This previously passed ../../files/metallb-config.yaml as Helm values,
+        # which created the IPAddressPool and L2Advertisement for nobody: the
+        # field was misspelled AND the file is not a values file at all, it is a
+        # multi-document manifest of custom resources. Feeding CRs to Helm as
+        # values cannot create them.
+        #
+        # The pool now lives in manifests/metallb/metallb-config.yaml and is
+        # applied by the root kustomize.
+        #
+        # Leaving the key in place also broke root itself: root renders every
+        # child Application, and one schema-invalid child is enough to fail the
+        # whole kustomize build with
+        #   "error building typed value from config resource:
+        #    .spec.source.helm.valuesFiles: field not declared in schema"
+        # which left every Application in the cluster reporting Unknown.
   destination:
     server: https://kubernetes.default.svc
     namespace: metallb-system
