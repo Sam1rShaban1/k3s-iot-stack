@@ -24,7 +24,26 @@ spec:
               enabled: true
               pvc:
                 enabled: true
-                storageClassName: longhorn
+                # `local-path`, not `longhorn`.
+                #
+                # The live PVC was created with local-path, and
+                # `volumeClaimTemplates` is immutable: a StatefulSet's spec only permits
+                # changes to replicas, ordinals, template, updateStrategy,
+                # revisionHistoryLimit, pvcRetentionPolicy and minReadySeconds. So every
+                # ArgoCD sync failed with
+                #
+                #   StatefulSet.apps "nats" is invalid: spec: Forbidden: updates to
+                #   statefulset spec for fields other than ... are forbidden
+                #
+                # and the nats Application sat OutOfSync with a SyncError, retrying,
+                # forever. The chart version was already correct (2.12.5 on both sides)
+                # -- this value was the only difference, and it was the difference.
+                #
+                # The alternative -- deleting the StatefulSet and its PVC so ArgoCD could
+                # recreate it on longhorn -- would destroy the JetStream contents and
+                # require migrating the volume. Declaring where the data already lives
+                # is the only move that is both correct and safe.
+                storageClassName: local-path
                 size: 2Gi
             memoryStore:
               enabled: true

@@ -3044,3 +3044,90 @@ it. The fix is to record the broker in the report and to make a zero-message
 scenario an explicit failure with its cause, rather than a line in a JSON
 summary. The benchmark runs in this write-up pin `--broker` explicitly for
 that reason.
+
+## D48 — An immutable field in a Helm value made one Application unsyncable, and ArgoCD then backed off
+
+The `nats` Application was OutOfSync for months with a `SyncError`. The
+message was the whole story:
+
+```
+StatefulSet.apps "nats" is invalid: spec: Forbidden: updates to statefulset
+spec for fields other than 'replicas', 'ordinals', 'template',
+'updateStrategy', 'revisionHistoryLimit', 'persistentVolumeClaimRetentionPolicy'
+and 'minReadySeconds' are forbidden
+```
+
+The chart version was already correct on both sides (2.12.5 live and in Git).
+The only difference was one line of Helm values:
+
+| | storage class for the JetStream file store |
+|---|---|
+| Git declared | `longhorn` |
+| the live PVC actually is | `local-path` |
+
+`volumeClaimTemplates` is immutable, so ArgoCD could never apply its desired
+state. It retried, failed, and then **stopped retrying**:
+
+```
+Skipping auto-sync: failed previous sync attempt to [2.12.5] and will not
+retry for [2.12.5]
+```
+
+That back-off is keyed on the *revision*, and the revision here is the chart
+version, which does not change when the values do. So a values correction
+alone would not have retried the sync; it needed an explicit operation. The
+failure was self-sustaining: the wrong value caused the sync to fail, the
+failure caused the back-off, and the back-off meant the corrected value was
+never applied.
+
+The fix is to make the declaration match where the data already lives
+(`local-path`). The alternative -- deleting the StatefulSet and its PVC so
+ArgoCD could recreate it on longhorn -- would destroy the JetStream contents
+and require migrating the volume, which is a data-migration project, not a
+sync fix.
+
+This is the same class of bug as D39 (MetalLB): a declarative file and the
+cluster disagreeing about a fact, with the disagreement surfacing as
+something else entirely -- a chart version that was never the problem, and a
+retry loop that looked like a controller fault.
+
+Two lessons worth keeping:
+
+* **A failed sync plus an unchanged revision is a permanent stall.** "Re-enable
+  auto-sync" does not help; the Application must be given an explicit
+  operation, or the revision must change.
+* **The `longhorn` Application's OutOfSync is benign and should not be
+  "fixed".** Its sync *succeeded*; only the CRDs differ, because Helm does not
+  upgrade CRDs it installed from a chart's `crds/` directory. Forcing them
+  would be busywork with a real risk of clobbering a live CRD.
+
+## D49 — An instant query has a five-minute memory, and it will lie to you
+
+While verifying the pipeline after the D48 fix, the following query returned
+nothing:
+
+```
+count(iot_sensor_ts{device_id=~".*finalcheck.*"})   ->  0
+```
+
+while the pipeline was demonstrably delivering the messages. Two separate
+things were wrong, and both are easy to mistake for a broken system:
+
+* an **instant** query only sees samples in a lookback window (five minutes by
+  default). The data was minutes old at that point, so the series genuinely
+  were not in scope;
+* the **regex** form with `.*` around the value returned nothing even for
+  samples inside the window, while an exact-match selector on the same series
+  worked.
+
+The export API (`/api/v1/export`) with an explicit `start`/`end` showed all
+eleven series and all fifteen samples immediately, including the two new stage
+series. The harness has always used export for exactly this reason, and this
+write-up's spot checks should too: a zero from an instant query is not
+evidence of absence, and the harness's own reports are the authoritative
+measurement.
+
+The general form of the mistake: **a query that returns nothing has two
+possible causes -- no data, or a query that cannot see the data -- and they
+look identical from the outside.** The cheap disambiguation is to re-ask with
+an explicit time range through the export API, which is what caught this.
