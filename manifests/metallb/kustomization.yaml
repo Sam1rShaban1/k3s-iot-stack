@@ -1,0 +1,11 @@
+# Required so the root kustomize (argocd/apps/kustomization.yaml) can
+# accumulate this directory.
+#
+# Without this file, `kustomize build argocd/apps` fails outright with
+# "accumulating resources from '../../manifests/metallb'", which takes the root
+# Application down with it -- and because root is what owns every child
+# Application, every child stops reconciling too.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - metallb-config.yaml
