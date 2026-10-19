@@ -21,8 +21,122 @@ spec:
       # ran for 184 days with no ArgoCD Application owning it, invisible to
       # drift detection and unaffected by self-heal. A silently invalid
       # manifest looks identical to a correct one in Git.
-      valueFiles:
-        - ../../files/victoriametrics-values.yaml
+      # Values are INLINED here rather than pulled from a `valueFiles` entry.
+      #
+      # Two separate defects made the external-file form impossible:
+      #
+      #   * the field was first spelled `valuesFiles`, which ArgoCD rejects
+      #     outright ("field not declared in schema"), so the Application was
+      #     never created and this workload ran unmanaged for 184 days;
+      #   * after fixing the spelling, ArgoCD still could not resolve the path:
+      #     "error resolving value file path:
+      #      file '../../files/victoriametrics-values.yaml'". ArgoCD resolves
+      #     `valueFiles` relative to the Application's source directory
+      #     (argocd/apps/victoriametrics) and will not follow `../` outside
+      #     it, so a file at the repo root is unreachable by reference.
+      #
+      # Inlining sidesteps both and matches how the emqx Application already
+      # passes its values.
+      #
+      # NOTE: automated sync remains disabled below. These values are STALE
+      # relative to the running StatefulSet and differ in ways that would
+      # destroy the store (storage class, size, retention, series ceiling).
+      # See the syncPolicy block and D38.
+      values: |
+        replicaCount: 1
+
+        resources:
+          requests:
+            cpu: 750m
+            memory: 1.5Gi
+          limits:
+            cpu: 1500m
+            memory: 3Gi
+
+        persistence:
+          enabled: true
+          storageClass: local-path
+          size: 20Gi
+
+        service:
+          type: ClusterIP
+          ports:
+            http: 8428
+            grpc: 8429
+
+        extraArgs:
+          - --retentionPeriod=45d
+          - --memory.allowedPercent=50
+          - --storageDataPath=/data
+          - --httpListenAddr=:8428
+          - --loggerLevel=warn
+          - --loggerTimezone=UTC
+          - --search.maxQueryDuration=60s
+          - --search.maxUniqueTimeseries=2000000
+          - --search.maxSeriesPerQuery=200000
+          - --search.maxQueryLen=32000
+          - --search.maxConcurrentRequests=50
+          - --search.maxPointsPerTimeseries=50000
+          - --search.maxConcurrentSelectRequests=20
+          - --search.maxConcurrentInsertRequests=20
+          - --search.maxDailySeriesExemplars=100000
+          - --search.maxSeriesPerMetric=100000
+          - --search.maxTagsPerTimeseries=100
+          - --search.maxTagValues=100000
+          - --search.maxUniqueTagValues=100000
+          - --search.cacheDataBytes.maxSizeBytes=268435456  # 256MB
+          - --search.cacheIndexBytes.maxSizeBytes=134217728  # 128MB
+          - --search.cacheTimeseriesHeaders.maxSizeBytes=67108864  # 64MB
+          - --http.pathPrefix="/"
+          - --http.maxRequestSize=33554432  # 32MB
+          - --http.maxConcurrentRequests=1000
+          - --http.idleConnTimeout=30s
+          - --http.shutdownTimeout=30s
+
+        nodeSelector:
+          kubernetes.io/arch: arm64
+
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                    - victoria-metrics-single
+                topologyKey: kubernetes.io/hostname
+
+        tolerations:
+        - key: "arm"
+          operator: "Exists"
+          effect: "NoSchedule"
+
+        priorityClassName: system-cluster-critical
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8428
+          initialDelaySeconds: 60
+          periodSeconds: 30
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8428
+          initialDelaySeconds: 30
+          periodSeconds: 10
+
+        env:
+        - name: GOGC
+          value: "100"
+        - name: GOMAXPROCS
+          value: "4"
+        - name: GOMEMLIMIT
+          value: "2.5GiB"
   destination:
     server: https://kubernetes.default.svc
     namespace: victoriametrics
