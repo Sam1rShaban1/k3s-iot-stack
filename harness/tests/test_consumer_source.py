@@ -181,6 +181,42 @@ class TestNoDuplicatedSeries(unittest.TestCase):
         second = ns["format_metrics_ack"](dict(self.MESSAGE), 1250)
         self.assertIn('iot_sensor_latency_ms{device_id="d1"} 250', second)
 
+    def test_stage_split_from_benthos_entry(self):
+        """With an entry stamp, pass 1 must expose both halves of ingest.
+
+        This is the split the earlier instrumentation attempts could not
+        produce: without it, publisher+broker and Benthos->NATS are one number.
+        """
+        ns = self._functions()
+        msg = dict(self.MESSAGE)
+        msg["benthos_entry_ts"] = 1004
+        first = ns["format_metrics"](msg, 1817)
+        self.assertIn(
+            'iot_sensor_publish_to_benthos_ms{device_id="d1"} 4', first)
+        self.assertIn(
+            'iot_sensor_benthos_to_nats_latency_ms{device_id="d1"} 813', first)
+
+    def test_no_stage_series_without_an_entry_stamp(self):
+        """A message that predates the instrumentation must not emit junk."""
+        ns = self._functions()
+        first = ns["format_metrics"](dict(self.MESSAGE), 1817)
+        self.assertNotIn("iot_sensor_publish_to_benthos_ms", self._names(first))
+        self.assertNotIn(
+            "iot_sensor_benthos_to_nats_latency_ms", self._names(first))
+
+    def test_ack_pass_measures_the_last_hop(self):
+        """nats_exit_ts is on the same dict, so the final hop is measurable."""
+        ns = self._functions()
+        msg = dict(self.MESSAGE)
+        msg["nats_exit_ts"] = 1817
+        second = ns["format_metrics_ack"](msg, 1821)
+        self.assertIn('iot_sensor_nats_to_vm_ms{device_id="d1"} 4', second)
+        self.assertEqual(
+            self._names(second),
+            {"iot_sensor_vm_write_ack_ts", "iot_sensor_latency_ms",
+             "iot_sensor_nats_to_vm_ms"},
+        )
+
     def test_render_respects_the_only_filter(self):
         ns = self._functions()
         out = ns["_render"](dict(self.MESSAGE), "d1", only=("ts",))

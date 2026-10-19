@@ -151,6 +151,14 @@ def format_metrics(data, nats_exit_ts):
     data["nats_exit_ts"] = nats_exit_ts
     if "benthos_entry_ts" in data:
         data["benthos_to_nats_latency_ms"] = nats_exit_ts - data["benthos_entry_ts"]
+        sensor_ts = data.get("ts")
+        if sensor_ts is not None:
+            # The stage the probe work finally unlocked: how long the message
+            # spent between the publisher stamping `ts` and Benthos seeing it.
+            # That span covers the MQTT publish, the broker's queueing and the
+            # bridge's delivery, which the old two-way split could not separate
+            # from Benthos -> NATS.
+            data["publish_to_benthos_ms"] = data["benthos_entry_ts"] - sensor_ts
     return _render(data, device)
 
 def format_metrics_ack(data, ack_ts):
@@ -174,7 +182,12 @@ def format_metrics_ack(data, ack_ts):
     sensor_ts = data.get("ts")
     if sensor_ts is not None:
         data["latency_ms"] = ack_ts - sensor_ts
-    return _render(data, device, only=("vm_write_ack_ts", "latency_ms"))
+    # `nats_exit_ts` was added to the same dict by format_metrics, so the final
+    # hop can be measured here without re-emitting any pass-1 series.
+    if "nats_exit_ts" in data:
+        data["nats_to_vm_ms"] = ack_ts - data["nats_exit_ts"]
+    return _render(data, device, only=("vm_write_ack_ts", "latency_ms",
+                                       "nats_to_vm_ms"))
 
 def _render(data, device, only=None):
     lines = []

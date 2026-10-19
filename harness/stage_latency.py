@@ -5,14 +5,21 @@ Answers "where does the latency actually come from" for one scenario, using the
 timestamps the consumer already publishes:
 
     ts                 set by the publisher, before MQTTClient_publish
+    benthos_entry_ts   stamped by the Benthos mapping as the message arrives
     nats_exit_ts       taken by the consumer when it pulls the message
     vm_write_ack_ts    taken after VictoriaMetrics accepts the write
 
 so
 
-    ingest = nats_exit_ts - ts          publisher -> EMQX -> Benthos -> NATS
-    write  = vm_write_ack_ts - nats_exit_ts   consumer -> VictoriaMetrics
-    total  = vm_write_ack_ts - ts
+    publish_to_benthos = benthos_entry_ts - ts          MQTT publish + broker
+    benthos_to_nats    = nats_exit_ts - benthos_entry_ts  bridge -> JetStream
+    ingest             = nats_exit_ts - ts              both of the above
+    write              = vm_write_ack_ts - nats_exit_ts consumer -> VictoriaMetrics
+    total              = vm_write_ack_ts - ts
+
+`benthos_entry_ts` is what makes the first split possible. Before it existed
+the "ingest" stage was a single number covering the publisher, the broker and
+the bridge, and a tail in any of them was indistinguishable from the others.
 
 Messages are paired by the VictoriaMetrics sample timestamp, which is identical
 across every series one message produces because they are written in the same
@@ -33,13 +40,19 @@ import json
 import os
 import sys
 
-SERIES = ("ts", "nats_exit_ts", "vm_write_ack_ts", "latency_ms")
+SERIES = ("ts", "benthos_entry_ts", "nats_exit_ts", "vm_write_ack_ts",
+          "latency_ms")
 
 STAGE_LABELS = {
-    "ingest": "publisher -> EMQX -> Benthos -> NATS",
+    "publish_to_benthos": "publisher -> Benthos (MQTT+broker)",
+    "benthos_to_nats": "Benthos -> NATS",
+    "ingest": "publisher -> NATS (combined)",
     "write": "consumer -> VictoriaMetrics",
     "total": "end to end",
 }
+
+# Order matters only for display: the two sub-stages then their sum.
+STAGE_ORDER = ("publish_to_benthos", "benthos_to_nats", "ingest", "write")
 
 
 def load(raw_dir: str, scenario: str) -> dict:
@@ -76,17 +89,26 @@ def pct(values: list[float], frac: float) -> float:
 
 def analyse(raw_dir: str, scenario: str) -> dict:
     data = load(raw_dir, scenario)
+    publish_to_benthos: list[float] = []
+    benthos_to_nats: list[float] = []
     ingest: list[float] = []
     write: list[float] = []
     total: list[float] = []
     reported: list[float] = []
 
     for device, stamps in data["ts"].items():
+        entry = data["benthos_entry_ts"].get(device) or {}
         nats = data["nats_exit_ts"].get(device) or {}
         ack = data["vm_write_ack_ts"].get(device) or {}
         lat = data["latency_ms"].get(device) or {}
         for wtime, ts_ms in stamps.items():
+            entry_ms = entry.get(wtime)
             exit_ms = nats.get(wtime)
+            if entry_ms is not None and entry_ms - ts_ms >= 0:
+                publish_to_benthos.append(entry_ms - ts_ms)
+            if entry_ms is not None and exit_ms is not None:
+                if exit_ms - entry_ms >= 0:
+                    benthos_to_nats.append(exit_ms - entry_ms)
             if exit_ms is not None:
                 delta = exit_ms - ts_ms
                 if delta >= 0:
@@ -104,6 +126,8 @@ def analyse(raw_dir: str, scenario: str) -> dict:
     return {
         "scenario": scenario,
         "aligned": len(ingest),
+        "publish_to_benthos": publish_to_benthos,
+        "benthos_to_nats": benthos_to_nats,
         "ingest": ingest,
         "write": write,
         "total": total,
@@ -125,7 +149,7 @@ def render(result: dict) -> str:
     header = f"  {'stage':<{width}} {'p50':>8} {'p90':>8} {'p99':>9} {'max':>9}"
     lines.append(header)
     lines.append("  " + "-" * (len(header) - 2))
-    for key in ("ingest", "write"):
+    for key in STAGE_ORDER:
         values = result[key]
         if not values:
             continue

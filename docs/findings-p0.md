@@ -2763,3 +2763,131 @@ unilaterally: mirror the control-plane images and repoint these workloads at the
 mirror, or pre-pull them onto every node so rescheduling is survivable. Adding
 this as a preflight check (flag any non-mirror image reference in a namespace
 whose pod is not currently running) would catch it before the next incident.
+
+## D41 — One invalid child Application took down reconciliation for the whole cluster
+
+Completing the D38/D39 recovery exposed a failure mode worth recording
+separately, because it is the reason the outage was so hard to read: **root
+renders every child Application, and one schema-invalid child fails the entire
+root build.**
+
+The sequence was:
+
+1. `victoriametrics/application.yaml` used `spec.source.helm.valuesFiles`, which
+   ArgoCD rejects (`field not declared in schema`). Fixing it to `valueFiles`
+   then failed differently: `error resolving helm value file path: file
+   '../../files/victoriametrics-values.yaml'`. ArgoCD resolves value files
+   relative to the Application's source directory and will not follow `../`
+   outside it. Values are now inlined under `spec.source.helm.values`, which is
+   how the emqx Application already passed its values.
+2. Root still reported `Unknown`, with the same `valuesFiles` error. There was a
+   **second** live occurrence: `argocd/apps/metallb/application.yaml` still had
+   `valuesFiles: [../../files/metallb-config.yaml]`. That field not only used
+   the wrong key name, it fed a multi-document **manifest of custom resources**
+   to Helm as values. Helm cannot create CRs from values; the pool was created
+   by nothing (D39).
+3. With the key removed, root's kustomize build succeeded (24 resources) and
+   root went `Unknown -> OutOfSync -> Synced`.
+
+The diagnostic trap: ten Applications showed `Unknown`, which reads like ten
+separate problems or a controller failure. In fact the controller was fine; it
+could not build one source, and therefore could not compare any of the ten.
+`kubectl kustomize argocd/apps` reproduces the error locally in under a second
+and should be the first step whenever the whole ApplicationSet is `Unknown`.
+
+A second trap follows from ArgoCD's caching: after the Git fix, root reported
+`failed to calculate diff **from cache**`. Clearing `mfst|*` keys in
+`argocd-redis` was required before the corrected manifest was used. The
+distinction matters -- `from cache` means Git is already right and only the
+cache is stale, while an identical message without it means the bad manifest is
+still in Git.
+
+`redpanda` carried the same invalid key even though it is not in the root
+kustomize. It was fixed too: an orphan Application is one `kustomize edit add
+resource` away from breaking root exactly the same way.
+
+## D42 — A six-month zombie Application is invisible to every existing check
+
+The D39 outage began in April 2026 and was not noticed until October. A
+`longhorn` Application carried `deletionTimestamp: 2026-04-02`; its
+`longhorn-uninstall` pre-delete hook could never succeed because Longhorn
+refuses to uninstall while `deleting-confirmation-flag` is false. The finalizer
+never cleared, so the object could not be collected. The controller retried the
+doomed delete forever, the reconcile queue wedged behind it, and every other
+Application drifted to `Unknown` with auto-sync skipped.
+
+Nothing in `harness/preflight.py` inspected ArgoCD at all. Every check was green
+throughout: pods ran, requests were served, the pipeline moved messages. The
+cluster was **operationally healthy and managerially dead**, and no test
+distinguished those states.
+
+Detector 14 (`argocd-apps-settle`, added in this change) closes that gap:
+
+* an Application deleting for longer than 15 minutes is **fatal** -- that is the
+  exact signature of the longhorn zombie, and a delete that has not completed in
+  fifteen minutes is not going to;
+* an Application `Unknown` with no reconcile for over an hour is a **non-fatal
+  warning**, because some Applications sit `Unknown` legitimately (this
+  cluster's own `argocd` app reports a 404 on its Helm repo index). Making that
+  fatal would mask the real signal.
+
+The asymmetry is deliberate. A stuck deletion has no benign explanation; a
+stale `Unknown` usually does. Reporting both at the same severity would train
+the operator to ignore the check.
+
+Tests cover the six-month zombie, recent churn, stale and fresh `Unknown`,
+missing reconcile stamps, an absent ArgoCD CRD (preflight also runs where
+ArgoCD is not installed), and a list failure.
+
+## D43 — The MQTT input delivers objects, which is why the stage instrumentation kept breaking
+
+Three attempts to stamp `benthos_entry_ts` failed, and each was explained by a
+guess that turned out to be wrong. The failure modes were:
+
+| form | result |
+|---|---|
+| `root.benthos_entry_ts = <ms>` | `stored=0`, every pod Running, preflight green |
+| `root = this.parse_json()` | `expected string value, got object from field 'this'` on every message |
+| `root = this.parse_json().assign(...)` | `assign` takes one argument in 4.1.0 |
+
+The contradiction -- `this` is "not a string", yet assigning to `root` collapses
+the message -- was never resolved by reasoning. It was resolved by **measuring**
+what the input delivers: a probe Benthos instance subscribed to
+`$share/probe/sensors/#` (a separate shared group, so it receives its own copy
+and cannot steal pipeline traffic) and logged `this.type()` for real publisher
+output. The answer is `object`. The MQTT input parses JSON payloads itself.
+
+That single fact explains all three rows:
+
+* `this.parse_json()` fails because `this` is already parsed;
+* the mapping **root** is still the raw payload, even though `this` reads as an
+  object. Assigning a subfield to raw bytes coerces the root to an object
+  containing only that field -- so `device_id` vanished and the consumer stored
+  nothing, silently;
+* binding `root = this` first makes the root the parsed object, after which the
+  field assignment merges into it.
+
+The working mapping, verified on the live broker:
+
+```
+root = this
+root.benthos_entry_ts = (timestamp_unix_nano() / 1000000).floor()
+```
+
+`timestamp_unix_milli()` does not exist in Benthos 4.1.0; only
+`timestamp_unix_nano()` is available. Output retained every original field and
+gained the stamp, with entry-minus-publisher of 4-6 ms at 5 msg/s.
+
+The general lesson is in the method, not the answer: `benthos test` unit tests
+had passed on both the working and the pipeline-breaking form because the test
+root is an object, not what the MQTT input delivers. A green unit test proved
+nothing. A probe against the real broker answered it in one run. When a
+transformation on a live stream misbehaves, observe the actual input type before
+changing the transformation again.
+
+With the stamp present, `stage_latency.py` now reports four stages instead of
+two: `publisher -> Benthos` (MQTT publish plus broker queueing),
+`Benthos -> NATS` (the bridge), their sum (`ingest`), and `consumer ->
+VictoriaMetrics`. The consumer emits `publish_to_benthos_ms` and `nats_to_vm_ms`
+alongside the existing `benthos_to_nats_latency_ms`, so the split is queryable
+directly rather than recomputed from raw samples.
