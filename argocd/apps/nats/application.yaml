@@ -20,6 +20,18 @@ spec:
             enabled: false
           jetstream:
             enabled: true
+            # 1s, not the 2-minute default.
+            #
+            # The server reported `sync_interval: 120000000000` -- 120
+            # seconds, the NATS default. The stage split measured the backlog
+            # ageing in JetStream with a median of 51.6 s at 8000 msg/s, which
+            # sits inside that window, so the two were worth separating. Whether
+            # the sync interval actually gates message visibility is not
+            # established -- the timing instrumentation in the consumer is what
+            # settles it -- but a two-minute fsync interval is not something a
+            # latency-sensitive pipeline should be running with, and the cost of a
+            # one-second interval is one fsync per second.
+            sync_interval: "1s"
             fileStore:
               enabled: true
               pvc:

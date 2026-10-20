@@ -4,7 +4,20 @@ metadata:
   name: nats-consumer
   namespace: nats-consumer
 spec:
-  replicas: 6
+  # 10 replicas.
+  #
+  # The consumer is the component the pipeline is actually limited by, and it
+  # is limited on serial work per replica: one fetch/parse/write loop in one
+  # event loop. Measured (D54): 3 replicas sustained ~3000 msg/s, 6 sustained
+  # ~5800 msg/s, with no node above 21% CPU. So the lever is replicas of the
+  # saturated component, not faster nodes.
+  #
+  # The anti-affinity is `preferred`, not `required`, so 10 replicas spread
+  # over 5 nodes with two per node. That is deliberate: the consumer is not
+  # CPU-bound, so co-location costs nothing, and `required` would leave the
+  # surplus unschedulable -- exactly what happened to the 10-replica Benthos
+  # attempt in D37.
+  replicas: 10
   selector:
     matchLabels:
       app: nats-consumer
@@ -35,6 +48,13 @@ spec:
             # batch_sender(), chunked by BATCH_SIZE.
             - name: MAX_CONCURRENT_SENDS
               value: "32"
+            # The three stage series (benthos_entry_ts, nats_exit_ts,
+            # consumer_queue_ms) are 3 of the 11 series written per message.
+            # They are what makes the latency attribution possible, so they
+            # are on by default; a pure throughput measurement can turn them
+            # off and give the write path ~27% less to do.
+            - name: EMIT_STAGE_METRICS
+              value: "1"
             - name: WRITE_TIMEOUT_S
               value: "30"
             # P0.6: pull consumer. A shared durable lets all replicas consume;

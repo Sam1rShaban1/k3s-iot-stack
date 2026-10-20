@@ -141,9 +141,15 @@ class TestNoDuplicatedSeries(unittest.TestCase):
         "pm10": 3.0, "temp": 20.0, "hum": 40.0,
     }
 
-    def _functions(self):
+    def _functions(self, emit_stage_metrics=True):
+        """Extract the rendering functions and run them in isolation.
+
+        The namespace has to be seeded with the module-level switch, because
+        the functions are exec'd one at a time and would otherwise raise
+        NameError on it.
+        """
         tree = ast.parse(CONSUMER.read_text())
-        ns = {}
+        ns = {"EMIT_STAGE_METRICS": emit_stage_metrics}
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name in (
                 "format_metrics", "format_metrics_ack", "_render"
@@ -226,6 +232,43 @@ class TestNoDuplicatedSeries(unittest.TestCase):
         first = ns["format_metrics"](dict(self.MESSAGE), 1817)
         self.assertNotIn("iot_sensor_consumer_queue_ms", self._names(first))
         self.assertIn('iot_sensor_nats_exit_ts{device_id="d1"} 1817', first)
+
+    def test_stage_series_disappear_when_switched_off(self):
+        """With the switch off, only the headline series are written."""
+        on = self._functions(emit_stage_metrics=True)
+        off = self._functions(emit_stage_metrics=False)
+        msg = dict(self.MESSAGE)
+        msg["benthos_entry_ts"] = 1004
+        msg["nats_exit_ts"] = 1817
+        first_on = on["format_metrics"](dict(msg), 1821)
+        first_off = off["format_metrics"](dict(msg), 1821)
+        for name in ("iot_sensor_benthos_entry_ts", "iot_sensor_nats_exit_ts",
+                     "iot_sensor_consumer_queue_ms"):
+            self.assertIn(name, self._names(first_on))
+            self.assertNotIn(name, self._names(first_off))
+        # The headline series must survive either way. `latency_ms` is
+        # emitted by the ACK pass, not the payload pass, so it is checked
+        # there.
+        self.assertIn("iot_sensor_ts", self._names(first_off))
+        ack_off = off["format_metrics_ack"](dict(msg), 1821)
+        self.assertIn("iot_sensor_latency_ms", self._names(ack_off))
+
+    def test_stage_metrics_can_be_switched_off(self):
+        """The three stage series are ~27% of the write volume.
+
+        They are what makes the stage attribution possible, so the default is
+        on, but a pure throughput measurement should not have to pay for
+        them: the write path is the constrained side of the pipeline.
+        """
+        import os
+        src = CONSUMER.read_text()
+        self.assertIn("EMIT_STAGE_METRICS", src)
+        # The switch must gate the header read, the fetch stamp and the
+        # queue series -- all three, or the write volume is unchanged.
+        body = src.split("EMIT_STAGE_METRICS = ", 1)[1]
+        for marker in ("benthos_entry_ts", "nats_exit_ts", "consumer_queue_ms"):
+            self.assertIn(marker, body)
+        self.assertIn("if EMIT_STAGE_METRICS:", src)
 
     def test_render_respects_the_only_filter(self):
         ns = self._functions()

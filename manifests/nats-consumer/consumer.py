@@ -72,6 +72,21 @@ NAK_BACKOFF_MAX_S = float(os.getenv("NAK_BACKOFF_MAX_S", "30.0"))
 DURABLE = os.getenv("CONSUMER_DURABLE", "metrics-consumer-pull")
 FETCH_TIMEOUT_S = float(os.getenv("FETCH_TIMEOUT_S", "1.0"))
 ACK_WAIT_S = float(os.getenv("ACK_WAIT_S", "60"))
+# Whether to publish the STAGE series -- the three extra series that make the
+# latency attribution possible:
+#
+#   benthos_entry_ts   stamped by Benthos, carried as a NATS header
+#   nats_exit_ts       when the consumer fetched the message
+#   consumer_queue_ms  how long it then waited in the consumer's own queue
+#
+# They cost 3 of the 11 series written per message, i.e. ~27% of the write
+# volume, and the write path is the constrained side of the pipeline. A
+# throughput run does not need them; an attribution run does. So they are
+# switchable, and the default is ON because the paper's stage attribution
+# depends on them and a missing series is worse than a slow one.
+#
+# Set EMIT_STAGE_METRICS=0 for a pure throughput measurement.
+EMIT_STAGE_METRICS = os.getenv("EMIT_STAGE_METRICS", "1") not in ("0", "false", "no")
 MAX_ACK_PENDING = int(os.getenv("MAX_ACK_PENDING", "10000"))
 # -1 == redeliver indefinitely, which is what paper section VII describes.
 MAX_DELIVER = int(os.getenv("MAX_DELIVER", "-1"))
@@ -160,11 +175,12 @@ def format_metrics(data, nats_exit_ts):
     #
     # The gap between the two is the consumer's own queueing, and it is
     # published separately as `consumer_queue_ms`.
-    fetch_ts = data.get("nats_exit_ts")
-    if fetch_ts is None:
-        data["nats_exit_ts"] = nats_exit_ts
-    else:
-        data["consumer_queue_ms"] = nats_exit_ts - fetch_ts
+    if EMIT_STAGE_METRICS:
+        fetch_ts = data.get("nats_exit_ts")
+        if fetch_ts is None:
+            data["nats_exit_ts"] = nats_exit_ts
+        else:
+            data["consumer_queue_ms"] = nats_exit_ts - fetch_ts
     # Only `benthos_entry_ts` and `consumer_queue_ms` are added. The other
     # stage series are derivable from the raw timestamps by
     # harness/stage_latency.py, which is where the split is actually analysed.
@@ -198,8 +214,15 @@ def format_metrics_ack(data, ack_ts):
 
 def _render(data, device, only=None):
     lines = []
+    # The stage series are skipped when the switch is off, so the switch is
+    # authoritative at the point of writing rather than only at the point of
+    # collection. Otherwise a field that arrived some other way would still
+    # be written, and the write volume would not actually drop.
+    stage_series = ("benthos_entry_ts", "nats_exit_ts", "consumer_queue_ms")
     for k, v in data.items():
         if only is not None and k not in only:
+            continue
+        if not EMIT_STAGE_METRICS and k in stage_series:
             continue
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             lines.append('iot_sensor_%s{device_id="%s"} %s' % (k, device, v))
@@ -416,13 +439,14 @@ async def main():
                         # took the pipeline from 86.4% delivery to 39.1% at
                         # 8000 msg/s. The header is nanoseconds; every other
                         # timestamp here is milliseconds.
-                        entry_ns = (getattr(msg, "headers", None) or {}).get(
-                            "benthos_entry_ts")
-                        if entry_ns is not None:
-                            data["benthos_entry_ts"] = int(entry_ns) // 1000000
-                        # Stamped here, at receipt, so the consumer's own
-                        # queueing can be separated from the pipeline's.
-                        data["nats_exit_ts"] = now_ms()
+                        if EMIT_STAGE_METRICS:
+                            entry_ns = (getattr(msg, "headers", None) or {}).get(
+                                "benthos_entry_ts")
+                            if entry_ns is not None:
+                                data["benthos_entry_ts"] = int(entry_ns) // 1000000
+                            # Stamped here, at receipt, so the consumer's own
+                            # queueing can be separated from the pipeline's.
+                            data["nats_exit_ts"] = now_ms()
                         batch_queue.append((msg, data))
                     except Exception as e:
                         print("Err: %s" % e)
