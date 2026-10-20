@@ -52,7 +52,26 @@ spec:
       - name: prometheus.prometheusSpec.storage.volumeClaimTemplate.spec.accessModes
         value: ReadWriteOnce
       - name: prometheus.prometheusSpec.storage.volumeClaimTemplate.spec.resources.requests.storage
-        value: 5Gi
+        # 10 GiB, not 5 GiB.
+        #
+        # The 5 GiB volume filled up and Prometheus died with
+        #   panic: preallocate: no space left on device
+        # which took the whole monitoring stack down (the `monitoring` Application
+        # reported Degraded) while the pipeline carried on unaffected -- the
+        # classic failure where the thing being measured is the thing that breaks.
+        #
+        # The arithmetic: 15 days of blocks came to ~3.5 GiB, and the
+        # write-ahead log is allowed to grow to ~1.1 GiB before Prometheus
+        # truncates it. 3.5 + 1.1 is 4.6 GiB of a 5 GiB volume, which leaves
+        # nothing for the head chunks or the compaction that both need. The
+        # steady state did not fit, so the volume was full and stayed full.
+        #
+        # Longhorn expands online, so the claim was grown in place
+        # (FileSystemResizePending -> 10Gi) with no data movement. The operator
+        # does not resize claims itself, so the CR is set to 10Gi here to
+        # match; a StatefulSet's volumeClaimTemplates are immutable for existing
+        # claims, which is why the claim itself had to be patched.
+        value: 10Gi
       # 15d, so a benchmark series and the node metrics around it survive a
       # restart and can be compared across runs.
       - name: prometheus.prometheusSpec.retention

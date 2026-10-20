@@ -38,10 +38,24 @@ spec:
       # Inlining sidesteps both and matches how the emqx Application already
       # passes its values.
       #
-      # NOTE: automated sync remains disabled below. These values are STALE
-      # relative to the running StatefulSet and differ in ways that would
-      # destroy the store (storage class, size, retention, series ceiling).
-      # See the syncPolicy block and D38.
+      # NOTE: automated sync remains disabled below, and the reason is now
+      # sharper than it was in D38.
+      #
+      # The running workload is NOT chart-created. The live StatefulSet is
+      # named `victoriametrics` (created 2026-04-14) and carries no Helm
+      # labels; the chart with releaseName `victoriametrics` renders
+      # `victoriametrics-victoria-metrics-single-server`, with a different claim
+      # name (`storage-victoriametrics-victoria-metrics-single-server-0` against
+      # the live `storage-victoriametrics-0`).
+      #
+      # So a sync would not update the running workload -- it would create a
+      # SECOND one, and with prune=true it would delete the live StatefulSet and
+      # its claim, taking the metrics store with it. A dry-run sync confirmed
+      # both resources are OutOfSync by name.
+      #
+      # The values below are therefore the INTENT, recorded for whoever adopts
+      # the chart properly, and they now match the live decision (longhorn,
+      # 20Gi, 24h retention) instead of contradicting it. See D38, D46, D51.
       values: |
         replicaCount: 1
 
@@ -55,7 +69,20 @@ spec:
 
         persistence:
           enabled: true
-          storageClass: local-path
+          # longhorn, 20Gi, and the claim is actually MOUNTED.
+          #
+          # The storage class was `local-path` here while the live claim was
+          # a Longhorn volume, and the container had no volumeMount at all:
+          # the StatefulSet declared the volume and never mounted it, so
+          # VictoriaMetrics wrote to the container's writable layer on the
+          # master's SD card. The "persistent" claim was bound, idle, and
+          # unused -- a pod recreation would have destroyed the store.
+          #
+          # `local-path` would also be the wrong choice even if it were
+          # mounted: it puts the metrics store on the same SD card as NATS
+          # JetStream and the control plane, on the node that already runs
+          # everything. Longhorn keeps it off that card.
+          storageClass: longhorn
           size: 20Gi
 
         service:
@@ -65,7 +92,19 @@ spec:
             grpc: 8429
 
         extraArgs:
-          - --retentionPeriod=45d
+          # 24h, not 45d.
+          #
+          # The store grows at ~2.4 bytes per sample. At the 6000 msg/s
+          # benchmark rate that is 11 series x 6000 msg/s x 2.4 B =
+          # ~13 GB/day, so a 20 GiB volume holds about a day and a half.
+          # 45 days would need ~600 GB, which this hardware does not have --
+          # and VictoriaMetrics does not degrade gracefully when its volume
+          # fills, it fails to start, exactly as Prometheus did (D50).
+          #
+          # 24h is what the volume can actually hold under benchmark load,
+          # and far more than the idle rate needs. The measurement record
+          # lives in the benchmark run directories, not in the store.
+          - --retentionPeriod=24h
           - --memory.allowedPercent=50
           - --storageDataPath=/data
           - --httpListenAddr=:8428

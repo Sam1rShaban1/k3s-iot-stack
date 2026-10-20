@@ -3022,9 +3022,19 @@ the pod is rescheduled.
 This is a configuration bug with two consequences that are easy to miss because
 nothing errors. The PVC's existence makes the deployment look durable, and the
 disk usage looks like normal accumulation rather than a volume that was never
-mounted. It also invalidates the storage half of any capacity claim, because
-the store's I/O performance is that of an SD card rather than of the Longhorn
-volume that was provisioned for it.
+mounted.
+
+**Correction (D51).** This entry originally claimed that the store's I/O
+performance was that of an SD card rather than of the provisioned Longhorn
+volume, and that the store competed with NATS JetStream for the master's
+card. That part was wrong. Measured during a 6000 msg/s run, the master's SD
+card wrote 0.0-0.1 MB per 4 s and was 0.0% busy -- VictoriaMetrics buffers
+rows in memory and flushes in batches, so the card is not the bottleneck and
+mounting the volume does not by itself speed anything up. What the missing
+mount actually broke was **durability**: the store lived in the container's
+writable layer and a pod recreation would have destroyed it. The volume is
+now mounted (D51) and the growth-rate arithmetic that actually constrains
+storage is recorded there.
 
 ## D47 — The harness can silently pick a broker it cannot publish to
 
@@ -3131,3 +3141,144 @@ The general form of the mistake: **a query that returns nothing has two
 possible causes -- no data, or a query that cannot see the data -- and they
 look identical from the outside.** The cheap disambiguation is to re-ask with
 an explicit time range through the export API, which is what caught this.
+
+## D50 — Prometheus filled its volume and took the whole monitoring stack down
+
+Found while investigating the VictoriaMetrics write latency: the `monitoring`
+Application had been reporting `Degraded` for a while, and the reason was not
+subtle.
+
+```
+prometheus-monitoring-kube-prometheus-prometheus-0   1/2   CrashLoopBackOff
+```
+
+with the container dying on:
+
+```
+panic: preallocate: no space left on device
+```
+
+The `monitoring` Application is a Helm chart with `helm.parameters`, and the
+volume size was declared as `5Gi` with a 15-day retention. The arithmetic
+never worked:
+
+| component | size |
+|---|---|
+| TSDB blocks (15 days, ~180 two-hour blocks) | ~3.5 GiB |
+| write-ahead log (Prometheus truncates it at ~1 GiB) | ~1.1 GiB |
+| **total** | **~4.6 GiB of a 5 GiB volume** |
+
+That leaves nothing for the head chunks or for the compaction that both need,
+so the volume was permanently full. It was not a slow leak; the steady state
+simply did not fit, which is why it stayed full.
+
+The failure mode is the interesting part. **Prometheus is the thing that
+measures the cluster, and it is the thing that broke** -- and the pipeline
+carried on serving traffic throughout, so nothing about the workload
+suggested a problem. The only symptom was the Application's health field.
+This is the same shape as the six-month ArgoCD zombie (D42): the observability
+layer was down while the system it observed was fine, and nothing in the
+preflight looked at it.
+
+Recovery: Longhorn expands volumes online, so the claim was grown in place
+(`FileSystemResizePending` -> `10Gi/10Gi`, 4.9G -> 3.7G used, 6.1G free) with
+no data movement, and the WAL was cleared to unblock the start. Two things
+worth knowing:
+
+* **the kube-prometheus-operator does not resize claims.** It propagated the
+  new size into the StatefulSet's `volumeClaimTemplates`, but those are
+  immutable for existing claims, so the claim itself had to be patched
+  directly. The CR is now set to `10Gi` to match, or the operator would revert
+  it.
+* **the filesystem resize only happens while a pod has the volume mounted.**
+  With the workload scaled to zero the resize sat at `FileSystemResizePending`
+  indefinitely; a helper pod holding the claim for a minute completed it.
+
+## D51 — The metrics store now has a real volume, and its growth rate is the constraint
+
+D46 found that VictoriaMetrics' StatefulSet declared a `storage` volume from a
+claim and never mounted it, so the store was living in the container's
+writable layer on the master's SD card, while the Longhorn claim sat bound,
+idle and unused. The volume is now mounted and the claim is expanded to 20 Gi:
+
+```
+/dev/longhorn/pvc-fc3a6583-...  /storage  ext4  rw,relatime  19.5G
+```
+
+But the first half of D46's claim was **wrong and is corrected here**. The
+performance story was that the metrics store was competing with NATS
+JetStream for the master's SD card. Measured during a 6000 msg/s run, that
+card did essentially nothing:
+
+```
+master SD card (mmcblk0):  wrote 0.0-0.1 MB/4s,  io_busy 0.0%
+```
+
+VictoriaMetrics buffers rows in memory and flushes to disk in batches, so
+the write rate to the card is small even at 6000 msg/s. The SD card was not
+the bottleneck, and mounting the volume therefore does not by itself make the
+pipeline faster. What the mount fixes is **durability**: the store survives a
+pod recreation, and it no longer lives on the same card as NATS and the
+control plane.
+
+The real constraint turns out to be the **growth rate**, which is worth
+stating because it bounds every storage decision on this cluster:
+
+```
+9.46 MB for 355,249 messages x 11 series  =  2.4 bytes per sample
+                                      =  ~13 GB/day at 6000 msg/s
+```
+
+So a 20 GiB volume holds about a day and a half of benchmark-rate traffic,
+and a 45-day retention would need ~600 GB -- which this hardware does not
+have. Worse, VictoriaMetrics does not degrade gracefully when its volume
+fills: it fails to start, exactly as Prometheus did (D50). Retention is
+therefore now **24h**, the longest the volume can actually hold under
+benchmark load. The measurement record lives in the benchmark run
+directories, not in the store, so nothing is lost by this.
+
+This is also the honest answer to "how much data does this cluster keep?": at
+benchmark rates, about a day. Any retention claim in the paper has to be
+stated together with the rate it was measured at.
+
+### The Application still cannot be auto-synced, and now there is a precise reason
+
+D38 disabled auto-sync for the VictoriaMetrics Application because syncing
+would destroy the store. That is still true, but the mechanism is now
+specific rather than inferred:
+
+* the running StatefulSet is named `victoriametrics` and **carries no Helm
+  labels** -- it was never created by the chart;
+* the chart with `releaseName: victoriametrics` renders
+  `victoriametrics-victoria-metrics-single-server`, with a different claim
+  name (`storage-victoriametrics-victoria-metrics-single-server-0` against the
+  live `storage-victoriametrics-0`);
+* a dry-run sync confirms both resources are OutOfSync **by name**.
+
+So a sync would not update the running workload; it would create a second
+one, and `prune: true` would delete the live StatefulSet and its claim along
+with the store. The values in the Application are now the *intent* for
+whoever adopts the chart properly -- longhorn, 20 Gi, 24h retention, matching
+the live decision rather than contradicting it -- but auto-sync stays off
+until the chart can be made to produce the same names (a `fullnameOverride`
+and a mount path of `/storage` rather than the chart's `/data`).
+
+## D52 — The instrumentation was fine; the cluster was not
+
+While measuring the stage split at 4000/6000/8000 msg/s, the delivery
+figures for the same binary moved between 86.4%, 93.6% and 51.5% within one
+session, with the only variable being time. The runs that reached 93.6% were
+the ones that started from an idle cluster; the ones that followed a heavy
+run did not.
+
+The pipeline is not saturated at 4000 or 6000 msg/s -- it delivers 100.0% at
+both, with the MQTT leg at 149 ms median. What is unreliable is the
+*measurement*: the harness clears the VictoriaMetrics store and the NATS
+stream before each scenario, but the consumer's in-memory queue and the
+VictoriaMetrics write backlog carry over, and the next scenario starts while
+the previous one is still draining.
+
+So the numbers that can go in the paper need a settling period between
+scenarios that is longer than the drain time, and the D37 ladder needs
+re-running under that protocol. Reporting any single 8000 msg/s run as
+"the" number is not defensible.
