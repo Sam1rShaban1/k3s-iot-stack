@@ -33,6 +33,13 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument("--qos", type=int, default=0, choices=(0, 1, 2))
     run_p.add_argument("--duration", type=int, help="test duration seconds")
     run_p.add_argument("--cooldown", type=int, help="cooldown seconds")
+    run_p.add_argument(
+        "--settle", type=int,
+        help="seconds to wait after the publishers stop before the measurement "
+             "window closes. Must exceed the age of the backlog, or the "
+             "delivered fraction is truncated by the window instead of by the "
+             "pipeline. Default 15.",
+    )
     run_p.add_argument("--output-root", help="where to write run directories")
     run_p.add_argument("--no-clear", action="store_true",
                         help="do not clear VictoriaMetrics before each scenario")
@@ -59,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             rates=args.rates,
             test_duration_s=args.duration,
             cooldown_s=args.cooldown,
+            settle_s=args.settle if args.settle is not None else 15,
             output_root=args.output_root,
         )
         print("resolved configuration:")
@@ -66,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  topic       : {conf.topic}")
         print(f"  vm          : {conf.vm_url}")
         print(f"  nodes       : {conf.nodes} ({conf.node_count})")
-        print(f"  duration    : {conf.test_duration_s}s   cooldown {conf.cooldown_s}s")
+        print(f"  duration    : {conf.test_duration_s}s   cooldown {conf.cooldown_s}s   settle {conf.settle_s}s")
         print(f"  scenarios   : {[cfg.HarnessConfig.scenario_name(c,r) for c,r in conf.scenarios()]}")
         print()
         summary = runner.run(

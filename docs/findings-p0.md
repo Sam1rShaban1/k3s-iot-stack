@@ -3282,3 +3282,88 @@ So the numbers that can go in the paper need a settling period between
 scenarios that is longer than the drain time, and the D37 ladder needs
 re-running under that protocol. Reporting any single 8000 msg/s run as
 "the" number is not defensible.
+
+## D53 — The 15-second settle window was truncating the measurement, not the pipeline
+
+The most important correction in this work, and it was hiding in plain sight.
+
+The harness stopped the publishers, waited 15 seconds, and then closed the
+measurement window. Everything published in that run had to be stored within
+those 15 seconds to be counted. At 8000 msg/s the pipeline does not drain in
+15 seconds -- it accepts the load losslessly and drains at a few thousand
+messages per second -- so a large part of the offered load was still in the
+pipe when the window closed:
+
+| settle | delivered | p99 |
+|---|---|---|
+| 15 s (the old default) | 46.3% | 44.7 s |
+| 120 s | **100.0%** | 67.4 s |
+
+The first table looks like catastrophic packet loss; the second shows that
+**every message the generator published was stored**. The p99 got *worse* with
+the longer settle, which is the tell: the messages were not lost, they were
+old. A truncated window can only make a delivery fraction look worse, and it
+does so silently, because nothing errors and the report looks entirely
+plausible.
+
+This is the same class of error as the rest of this session's findings: a
+measurement artifact that is indistinguishable from a system fault. It is
+also why the run-to-run variance was so large (D52) -- the fraction delivered
+depended on how much backlog happened to be in the pipe at the moment the
+window closed, which depends on the previous run.
+
+The settle is now a parameter (`--settle`, default 15 for compatibility) and
+these results use 120 s. The summary now also records the generator's
+published count and achieved rate, so the delivered fraction has a visible
+denominator and a run that published nothing is distinguishable from a run
+that lost everything (D47).
+
+A second measurement consequence follows from the same place. The **p99 at
+8000 msg/s is a function of the run length**, not of the system: the backlog
+grows linearly while the load is offered, so the p99 of a 60 s run is ~67 s
+and the p99 of a 300 s run would be ~300 s. Any latency figure quoted at a
+rate the pipeline cannot sustain is a statement about the experiment, not
+about the cluster. The sustainable rate has to be identified first, and at
+4000 msg/s the queue is stable (p99 3.6 s) while at 6000 msg/s it is already
+10.8 s at the median.
+
+## D54 — The saturated component was the consumer, and it scales horizontally
+
+D45 localised the tail to the Benthos->NATS stage and D53 showed the tail is a
+backlog rather than loss. That leaves one candidate: the consumer, whose
+sustained rate was ~4500 msg/s with three replicas -- about 1500 msg/s of
+serial work per replica, in a single event loop that fetches a batch, parses
+every message's JSON, and posts a body of 55,000 lines.
+
+The fix is not more hardware. It is more of the component that is actually
+saturated, because the limit is per-replica serial work rather than a
+shared resource:
+
+| consumer replicas | sustained throughput at 8000 msg/s offered | delivered (15 s settle) |
+|---|---|---|
+| 3 | ~3000 msg/s | 46.3% |
+| 6 | ~5800 msg/s | 90.4% |
+
+and no node exceeded 21% CPU in either case. The consumer's pods sat at
+119-133m each against a 2-CPU limit.
+
+**This answers the "horizontal or vertical" question, and the answer is
+neither.** The question was asked as if the cluster had a single scaling axis.
+It does not: the broker, the bridge and the consumer are separate components
+with separate limits, and the axis that matters is *which one is saturated*.
+Scaling the broker (EMQX clustering) is actively harmful here (D36).
+Scaling the bridge does nothing (D37). Scaling the consumer is what moved
+the number. And "vertical" -- fewer, faster nodes -- would have made the
+placement worse, because nothing was CPU-bound: the hottest node was at
+21%.
+
+The anti-affinity on the consumer is `preferred`, not `required`, so six
+replicas spread over five nodes with one node doubling up. That is correct
+here: the consumer is not CPU-bound, so co-location is harmless, and forcing
+`required` would leave the sixth replica unschedulable, exactly as happened
+to the 10-replica Benthos attempt in D37.
+
+The residual limit at 8000 msg/s is the *drain* rate, and it is now close to
+the sustainable rate. 4000 msg/s is the highest offered rate at which the
+queue is stable; 6000 and 8000 are accepted losslessly but accumulate
+backlog without bound.

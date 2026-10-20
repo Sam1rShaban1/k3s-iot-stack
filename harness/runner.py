@@ -350,8 +350,8 @@ def run(
         )
         time.sleep(conf.test_duration_s)
         gen = stop_publishers(procs)
-        print("  publishers stopped, settling 15s")
-        time.sleep(15)
+        print(f"  publishers stopped, settling {conf.settle_s}s")
+        time.sleep(conf.settle_s)
         window_end = time.time()
 
         # Device IDs are 'sensor_<scenario>_<index>_<run_id>_<pid>_<nanos>'.
@@ -435,6 +435,15 @@ def run(
                 "throughput_msg_s": r["results"]["throughput_msg_s"],
                 "efficiency_pct": r["results"]["efficiency_pct"],
                 "drop_rate_pct": r["results"]["drop_rate_pct"],
+                # The offered load, and what the generator actually produced.
+                # Without these the delivered fraction has no denominator in the
+                # summary, and a run that published nothing looks exactly like a run
+                # that lost everything (D47).
+                "generator_published": r["configuration"].get("generator_published"),
+                "generator_achieved_msg_s": r["configuration"].get("achieved_rate_msg_s"),
+                "delivery_ratio_pct": r["results"].get("delivery_ratio_pct"),
+                "settle_s": conf.settle_s,
+                "test_duration_s": conf.test_duration_s,
                 "avg_latency_ms": r["results"]["latency"]["avg_ms"],
                 "p50_latency_ms": r["results"]["latency"]["p50_ms"],
                 "p95_latency_ms": r["results"]["latency"]["p95_ms"],

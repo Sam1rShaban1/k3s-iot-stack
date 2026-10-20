@@ -1,48 +1,78 @@
 # K3s IoT Stack — Benchmark Report
 
-## Current Results (D37, authoritative)
+## Current Results (D53, authoritative)
 
-> Everything below this section predates the EMQX root-cause fixes (D34/D35) and
-> the EMQX resource correction (D37). Those sections are retained as a record of
-> the scaling study, **not** as the capacity of the system.
+> Everything below this section predates the EMQX root-cause fixes (D34/D35),
+> the EMQX resource correction (D37), the stage instrumentation (D43/D44) and
+> the storage work (D50/D51). Those sections are retained as a record of the
+> scaling study, **not** as the capacity of the system.
 
-Final ladder, 5× Pi 4B (8GB), 100 clients, EMQX at 3 CPU / 1Gi:
+Final ladder, 5× Pi 4B (8GB), 100 clients, EMQX 3 CPU / 1Gi, 6 consumer
+replicas, 120 s settle after the publishers stop:
 
-| Target rate | Delivery | Throughput | p50 | p99 |
+| Target rate | Generator published | Achieved | Delivered | Throughput | p99 |
+|---|---|---|---|---|---|
+| 4000/s | 238,778 | 3989 msg/s | **100.0%** | 3968 msg/s | 4.7 s |
+| 6000/s | 357,396 | 5975 msg/s | **100.0%** | 5383 msg/s | 15.6 s |
+| 8000/s | 475,966 | 7953 msg/s | **100.0%** | 4508 msg/s | 67.4 s |
+
+**Nothing is lost at any rate.** Every message the generator published was
+stored -- the earlier "51%" and "46%" figures were the measurement window
+closing before the pipeline had drained, not packet loss (D53).
+
+**The discriminator is the latency distribution, not the delivery fraction.**
+The stage split (D45) shows where the time goes:
+
+| rate | publisher→Benthos p50 | Benthos→NATS p50 | consumer→VM p99 | end-to-end p99 |
 |---|---|---|---|---|
-| 4000/s | **100.0%** | 3970 msg/s | 476 ms | 2335 ms |
-| 6000/s | **100.0%** | 5770 msg/s | 1087 ms | 3514 ms |
-| 7000/s | **100.0%** | 6709 msg/s | 2044 ms | 5408 ms |
-| 8000/s | **100.0%** | 6686 msg/s | 8249 ms | 13279 ms |
-| 10000/s | 67.6% | 5348 msg/s | — | — |
-| 12000/s | 74.6% | 6814 msg/s | — | — |
+| 4000/s | 46 ms | 742 ms | 1.9 s | 3.6 s |
+| 6000/s | 146 ms | 10.8 s | 4.7 s | 14.6 s |
+| 8000/s | 333 ms | 51.6 s | 1.2 s | 68.5 s |
 
-**Throughput knee: 8000–10000 msg/s.** 8000/s confirmed at 100.0% delivery
-across four independent runs.
+The MQTT leg -- publish, broker queueing, bridge delivery -- stays under
+350 ms at every rate. The whole delay is a **backlog ageing in JetStream**,
+because the consumer's drain capacity is finite.
 
-Two defensible operating points, which are not interchangeable:
+**Sustainable rate: ~4000 msg/s.** At 4000 msg/s the queue is stable and the
+end-to-end p99 is 3.6 s. At 6000 msg/s the backlog is already 10.8 s at the
+median, and at 8000 msg/s it is 51.6 s -- and because the backlog grows
+without bound, the p99 at 8000 measures the *length of the run*, not a
+property of the system. A 300-second run at 8000 msg/s would report a p99 of
+~300 s.
 
-* **6000 msg/s @ p99 3.5s** — 100% delivery, latency-reasonable. Recommended.
-* **8000 msg/s @ p99 13.3s** — 100% delivery, ~4× worse p99. Maximum throughput.
+So the defensible operating point is:
 
-At the 8000/s ceiling no component is CPU-saturated: EMQX uses 98m of its 3000m
-allowance, and the four busiest worker nodes sit at 15–34%. The binding
-constraint at 8000 is **queueing, not compute** (D37).
+* **4000 msg/s @ p99 3.6 s** — 100% delivery, in steady state, recommended.
 
-What moved these numbers, in order of effect:
+8000 msg/s is *accepted* losslessly but is not *sustainable*: it is a
+transient that the pipeline absorbs at the cost of unbounded latency.
 
-1. `force_shutdown.max_mailbox_size: 10000` — the real EMQX setting (D35). The
-   ceiling moved 3000–4000 → 6000 msg/s.
-2. EMQX `1500m`/`512Mi` → `3000m`/`1Gi` (D37). The ceiling moved 6000 → 8000.
-3. Explicit `delivery_ratio_pct = stored / generator_published` as the loss
-   metric. Earlier efficiency figures conflated generator inaccuracy with loss.
+### What moved these numbers
 
-Two changes that were tried and reverted, both measured:
+1. EMQX `force_shutdown.max_mailbox_size: 10000` (D35) and the 3000m/1Gi
+   resource raise (D37) — the broker's ceiling, now irrelevant because the
+   broker was never the limit.
+2. **Stage instrumentation as a NATS header rather than a payload field**
+   (D44). Adding a field to the payload re-serialises every message's JSON:
+   Benthos went from 1868m to 2740m CPU and delivery fell from 86.4% to
+   39.1%. The header costs nothing.
+3. **Six consumer replicas instead of three** (D54). The consumer is the
+   saturated component, and it is saturated on serial work per replica --
+   one fetch/parse/write loop. Doubling the replicas took sustained
+   throughput from ~3000 to ~5800 msg/s, with no node above 21% CPU.
+4. **A settle window longer than the backlog** (D53). The harness waited 15 s
+   after the publishers stopped, which is shorter than the time the pipeline
+   needs to drain, so the delivered fraction was truncated by the window and
+   read as packet loss. It is now a parameter, set to 120 s for these runs.
 
-* **EMQX clustered (3 replicas)** — forms correctly but collapses delivery to
-  2.2% at 3000 msg/s with 288 Benthos connection losses (D36).
-* **Benthos at 10 replicas** — no measurable ingest-p99 improvement, and the
-  surplus replicas will not schedule on a 5-node cluster (D37).
+### Reverted, with measurements
+
+* **EMQX clustered (3 replicas)** — delivery collapses to 2.2% at 3000 msg/s
+  with 288 Benthos connection losses (D36).
+* **Benthos at 10 replicas** — no ingest-p99 improvement, and the surplus
+  replicas will not schedule on 5 nodes (D37).
+* **Benthos at 10 replicas and the payload-based stage stamp** — both tried
+  and measured; the stamp cost half the pipeline (D44).
 
 ## Cluster Configurations
 

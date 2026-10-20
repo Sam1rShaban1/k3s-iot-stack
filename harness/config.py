@@ -295,6 +295,14 @@ class HarnessConfig:
     publisher_src: str = "publisher.c"
 
     test_duration_s: int = 60
+    # How long to wait after the publishers stop, before the measurement window
+    # closes. This has to be LONGER than the age of the backlog, or the
+    # delivered fraction is truncated by the window rather than by the
+    # pipeline: at 8000 msg/s the queue drains far more slowly than it fills,
+    # and a 15 s settle leaves a large share of the offered load still in the
+    # pipe when the window closes. That is indistinguishable from packet loss
+    # in the report.
+    settle_s: int = 15
     cooldown_s: int = 30
 
     scenario_clients: list[int] = field(default_factory=lambda: [10, 100])
@@ -332,7 +340,7 @@ class HarnessConfig:
             or _env("VICTORIA_METRICS_URL", "http://192.168.1.50:30000")
         ).rstrip("/")
 
-        for field_name in ("test_duration_s", "cooldown_s", "node_count"):
+        for field_name in ("test_duration_s", "cooldown_s", "settle_s", "node_count"):
             env_name = f"HARNESS_{field_name.upper()}"
             raw = _env(env_name)
             if overrides.get(field_name) is not None:
