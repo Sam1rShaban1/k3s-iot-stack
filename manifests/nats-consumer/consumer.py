@@ -83,6 +83,8 @@ STREAM_MAX_AGE_S = int(os.getenv("STREAM_MAX_AGE_S", "3600"))
 STREAM_MAX_BYTES = int(os.getenv("STREAM_MAX_BYTES", str(512 * 1024 * 1024)))
 
 _nak_backoff = NAK_BACKOFF_S
+# Counts VM writes so the timing log can be printed every Nth batch.
+write_counter = [0]
 
 def now_ms():
     return int(time.time() * 1000)
@@ -219,6 +221,7 @@ async def process_chunk(session, chunk):
 
     ok = False
     ack_ts = None
+    write_started = time.monotonic()
     try:
         async with session.post(
             VM_URL,
@@ -234,6 +237,16 @@ async def process_chunk(session, chunk):
                 print("VM error: %s - %s" % (resp.status, text[:200]))
     except Exception as e:
         print("VM error: %s" % e)
+    finally:
+        write_ms = (time.monotonic() - write_started) * 1000.0
+        # The write duration, with the size of the body, is the other half of
+        # the localisation: how long a batch of samples takes to be accepted,
+        # and how many samples that was. Printed sparingly -- one line per
+        # batch would drown the logs at 8000 msg/s.
+        write_counter[0] += 1
+        if write_counter[0] % 20 == 1:
+            print("vm write: %d msgs, %d bytes, %.0f ms"
+                  % (len(stamped), len(body), write_ms))
 
     if ok:
         _nak_backoff = NAK_BACKOFF_S
@@ -287,6 +300,43 @@ async def batch_sender(session, batch_queue):
         del batch_queue[:BATCH_SIZE]
         await guarded(chunk)
 
+async def create_pull_subscription(js):
+    """Create (or re-create) the shared durable pull subscription.
+
+    A JetStream subscription is bound to the CONNECTION that created it, not
+    just to the durable. When the NATS server restarts -- which it did here,
+    deliberately -- the durable survives with all of its messages, but this
+    object does not, and every subsequent fetch fails with
+    "ConnectionClosedError: nats: connection closed" forever.
+
+    That is exactly what happened: the consumer logged that error once per
+    second, indefinitely, and the pipeline silently stopped draining while
+    every pod stayed Running. The pipeline was broken and nothing reported
+    it -- the same shape of failure as the six-month ArgoCD zombie (D42) and
+    the full Prometheus volume (D50): the system looks healthy because
+    nothing checks whether the work is actually happening.
+
+    So the subscription is re-created when the connection dies. If that fails
+    too, the process exits non-zero and Kubernetes restarts it, which is
+    slower but cannot leave the consumer wedged.
+    """
+    return await js.pull_subscribe(
+        subject=SUBJECT,
+        durable=DURABLE,
+        stream=STREAM,
+        config=ConsumerConfig(
+            ack_policy=AckPolicy.EXPLICIT,
+            max_deliver=MAX_DELIVER,
+            # nats-py 2.14 takes ack_wait in SECONDS and multiplies by
+            # 1e9 itself. Passing nanoseconds overflows to 6e19 and the
+            # server rejects it; passing a timedelta fails in the client's
+            # int() conversion. Verified empirically against 2.14.0.
+            ack_wait=ACK_WAIT_S,
+            max_ack_pending=MAX_ACK_PENDING,
+        ),
+    )
+
+
 async def main():
     print("Starting NATS consumer (pull mode, batch_size=%d)" % BATCH_SIZE)
     nc, js = await setup()
@@ -303,21 +353,7 @@ async def main():
     # server distribute batches between them, which is the behaviour the
     # Deployment's replica count was always meant to provide.
     print("Creating pull subscription for %s (durable=%s)" % (SUBJECT, DURABLE))
-    sub = await js.pull_subscribe(
-        subject=SUBJECT,
-        durable=DURABLE,
-        stream=STREAM,
-        config=ConsumerConfig(
-            ack_policy=AckPolicy.EXPLICIT,
-            max_deliver=MAX_DELIVER,
-            # nats-py 2.14 takes ack_wait in SECONDS and multiplies by
-            # 1e9 itself. Passing nanoseconds overflows to 6e19 and the
-            # server rejects it; passing a timedelta fails in the client's
-            # int() conversion. Verified empirically against 2.14.0.
-            ack_wait=ACK_WAIT_S,
-            max_ack_pending=MAX_ACK_PENDING,
-        ),
-    )
+    sub = await create_pull_subscription(js)
 
     batch_queue = []
     connector = aiohttp.TCPConnector(limit=200, limit_per_host=200)
@@ -327,13 +363,22 @@ async def main():
             fetches = 0
             while True:
                 try:
+                    fetch_started = time.monotonic()
                     msgs = await sub.fetch(
                         batch=BATCH_SIZE, timeout=FETCH_TIMEOUT_S
                     )
+                    fetch_ms = (time.monotonic() - fetch_started) * 1000.0
                     fetches += 1
                     if fetches % 20 == 1:
-                        print("fetch ok: %d msgs (total fetches %d)"
-                              % (len(msgs) if msgs else 0, fetches))
+                        # The fetch duration localises the bottleneck. If it is
+                        # long, the consumer is waiting on the server
+                        # (JetStream's delivery); if it is short, the consumer
+                        # has messages in hand and the delay is in the write
+                        # path. It was not clear which, and the difference
+                        # decides whether the fix is more consumer replicas, a
+                        # faster store, or a cheaper write.
+                        print("fetch ok: %d msgs in %.0f ms (total fetches %d)"
+                              % (len(msgs) if msgs else 0, fetch_ms, fetches))
                 except (asyncio.TimeoutError, NatsTimeoutError):
                     continue
                 except Exception as e:
@@ -341,6 +386,21 @@ async def main():
                     # asyncio's, so a quiet pull loop previously looked
                     # identical to a healthy idle one. Report the type.
                     print("fetch error %s: %s" % (type(e).__name__, e))
+                    if "connection closed" in str(e).lower():
+                        # The server went away (restart, network blip). The
+                        # subscription is bound to the old connection, so
+                        # re-create it; otherwise every later fetch fails the
+                        # same way forever and the pipeline stops draining
+                        # while looking perfectly healthy.
+                        print("connection lost, re-subscribing")
+                        try:
+                            sub = await create_pull_subscription(js)
+                            print("re-subscribed to %s" % SUBJECT)
+                        except Exception as e2:
+                            print("re-subscribe failed (%s); exiting so "
+                                  "Kubernetes restarts the pod"
+                                  % type(e2).__name__)
+                            os._exit(1)
                     await asyncio.sleep(1.0)
                     continue
                 if not msgs:
