@@ -418,6 +418,17 @@ async def main():
                             "no stream",
                             "stream not found",
                             "invalid durable",
+                            # Deleting a stream makes JetStream answer a pull
+                            # request with 503 Service Unavailable rather than
+                            # "consumer not found" -- the durable is gone and
+                            # so is the stream it belonged to. Measured, not
+                            # assumed: the first version of this list did not
+                            # include it, and the pipeline stored nothing at
+                            # all with every pod Running and no errors
+                            # anywhere.
+                            "serviceunavailable",
+                            "no responders",
+                            "503",
                         )
                     )
                     if gone:
@@ -435,6 +446,24 @@ async def main():
                         print("subscription lost (%s), re-subscribing"
                               % type(e).__name__)
                         try:
+                            # The stream may be gone too, not just the
+                            # durable: deleting a stream takes its consumers
+                            # with it, and the benchmark harness recreates the
+                            # stream between scenarios. Recreate it before
+                            # subscribing, or the subscription fails with the
+                            # same error forever.
+                            try:
+                                await js.add_stream(
+                                    name=STREAM,
+                                    subjects=[SUBJECT],
+                                    max_age=STREAM_MAX_AGE_S,
+                                    max_bytes=STREAM_MAX_BYTES,
+                                    discard="old",
+                                )
+                            except Exception as e3:
+                                if ("already in use" not in str(e3)
+                                        and "stream name already" not in str(e3).lower()):
+                                    raise
                             sub = await create_pull_subscription(js)
                             print("re-subscribed to %s" % SUBJECT)
                         except Exception as e2:
