@@ -20,18 +20,24 @@ spec:
             enabled: false
           jetstream:
             enabled: true
-            # 1s, not the 2-minute default.
+            # `sync_interval` goes under this block's `merge`, NOT directly under
+            # `jetstream`. The chart renders the `jetstream` block from a fixed set of
+            # known keys (enabled, fileStore, memoryStore) and silently DROPS anything
+            # else -- a value placed there is ignored without any error, and the
+            # Application still reports Synced. `merge` is the chart's documented way to
+            # add keys to the rendered config, and the keys go in DIRECTLY: nesting them
+            # under another `jetstream` key renders a jetstream-inside-jetstream, which is
+            # wrong in exactly the same silent way.
             #
-            # The server reported `sync_interval: 120000000000` -- 120
-            # seconds, the NATS default. The stage split measured the backlog
-            # ageing in JetStream with a median of 51.6 s at 8000 msg/s, which
-            # sits inside that window, so the two were worth separating. Whether
-            # the sync interval actually gates message visibility is not
-            # established -- the timing instrumentation in the consumer is what
-            # settles it -- but a two-minute fsync interval is not something a
-            # latency-sensitive pipeline should be running with, and the cost of a
-            # one-second interval is one fsync per second.
-            sync_interval: "1s"
+            # 1s, not the 2-minute default. The server reported
+            # `sync_interval: 120000000000` and the measured backlog age (51.6 s median
+            # at 8000 msg/s) sits inside that window. Whether the interval gates message
+            # VISIBILITY is not established -- the consumer's fetch timing is what
+            # settles that -- but a two-minute fsync interval is not what a
+            # latency-sensitive pipeline should be running with, and the cost of 1s is
+            # one fsync per second.
+            merge:
+              sync_interval: "1s"
             fileStore:
               enabled: true
               pvc:

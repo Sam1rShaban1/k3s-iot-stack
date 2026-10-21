@@ -196,6 +196,14 @@ def _config(stream: str) -> dict:
         "token": os.environ.get("HARNESS_NATS_TOKEN") or None,
         "stream": _resolve_stream(stream),
         "durable": _durable(),
+        # The stream's shape, matching consumer.py's own config. The harness
+        # recreates the stream between scenarios, so it has to recreate it the
+        # way the consumer would have created it.
+        "subject": os.environ.get("HARNESS_NATS_SUBJECT", "iot.data"),
+        "max_age_s": int(os.environ.get("STREAM_MAX_AGE_S", "3600")),
+        "max_bytes": int(
+            os.environ.get("STREAM_MAX_BYTES", str(512 * 1024 * 1024))
+        ),
     }
 
 

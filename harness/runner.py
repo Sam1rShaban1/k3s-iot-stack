@@ -440,6 +440,16 @@ def run(
                 # summary, and a run that published nothing looks exactly like a run
                 # that lost everything (D47).
                 "generator_published": r["configuration"].get("generator_published"),
+                # How many publisher processes actually reported. If this is less
+                # than the client count, some of them never connected -- and the
+                # achieved rate then reflects the broker's backpressure rather than
+                # the generator's capability, which is not obvious from the number
+                # alone. Measured: the generator can do 7901 msg/s on this host, and
+                # a run that reported 3657 msg/s was the cluster pushing back on it.
+                "generator_processes_reporting": r["configuration"].get(
+                    "generator_processes_reporting"
+                ),
+                "generator_efficiency_basis": r["configuration"].get("efficiency_basis"),
                 "generator_achieved_msg_s": r["configuration"].get("achieved_rate_msg_s"),
                 "delivery_ratio_pct": r["results"].get("delivery_ratio_pct"),
                 "settle_s": conf.settle_s,
