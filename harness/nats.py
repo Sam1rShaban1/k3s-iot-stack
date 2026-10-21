@@ -219,6 +219,9 @@ import asyncio, os
 from nats.aio.client import Client as NATS
 
 STREAM = os.environ.get("HARNESS_NATS_STREAM", "IOT_DATA")
+SUBJECT = os.environ.get("HARNESS_NATS_SUBJECT", "iot.data")
+MAX_AGE_S = int(os.environ.get("STREAM_MAX_AGE_S", "3600"))
+MAX_BYTES = int(os.environ.get("STREAM_MAX_BYTES", str(512 * 1024 * 1024)))
 
 
 async def main():
@@ -234,7 +237,21 @@ async def main():
     try:
         js = nc.jetstream()
         before = (await js.stream_info(STREAM)).state.messages
-        await js.purge_stream(STREAM)
+        # Same as the direct route: delete and recreate, so the scenario starts
+        # from a known consumer position instead of inheriting the previous
+        # run's delete index and advanced sequences.
+        try:
+            await js.delete_stream(STREAM)
+        except Exception:
+            pass
+        await js.add_stream(
+            name=STREAM,
+            subjects=[SUBJECT],
+            max_age=MAX_AGE_S,
+            max_bytes=MAX_BYTES,
+            discard="old",
+            storage=os.environ.get("HARNESS_NATS_STORAGE", "file"),
+        )
         after = (await js.stream_info(STREAM)).state.messages
         print("RESULT %d %d" % (before, after))
     finally:
@@ -253,6 +270,9 @@ import asyncio, json, os
 from nats.aio.client import Client as NATS
 
 STREAM = os.environ.get("HARNESS_NATS_STREAM", "IOT_DATA")
+SUBJECT = os.environ.get("HARNESS_NATS_SUBJECT", "iot.data")
+MAX_AGE_S = int(os.environ.get("STREAM_MAX_AGE_S", "3600"))
+MAX_BYTES = int(os.environ.get("STREAM_MAX_BYTES", str(512 * 1024 * 1024)))
 DURABLE = os.environ.get("HARNESS_NATS_DURABLE", "metrics-consumer-pull")
 
 
@@ -408,13 +428,47 @@ def _direct_purge(cfg: dict) -> NatsResult:
         try:
             js = nc.jetstream()
             before = (await js.stream_info(cfg["stream"])).state.messages
-            await js.purge_stream(cfg["stream"])
+            # DELETE and RECREATE, not just purge the messages.
+            #
+            # A purge empties the stream but leaves everything else in place:
+            # the durable's delivered/ack sequences keep advancing (past 36
+            # million after a day of runs) and the store keeps a delete index
+            # covering every purged sequence.
+            #
+            # That accumulated state is not free. The same 8000 msg/s scenario
+            # delivered 77.4% of what the generator published against a FRESH
+            # stream and durable, and 60-68% against the accumulated state.
+            # The comparison was between two different systems, because the
+            # difference was the history of the previous runs.
+            #
+            # Recreating also resets the durable, so each scenario starts from
+            # a known consumer position instead of inheriting one. The limits
+            # must match the consumer's own stream config, or the consumer will
+            # re-converge them at startup and the two will disagree.
+            #
+            # HARNESS_NATS_STORAGE selects the store type. `memory` skips the
+            # file store entirely, which is a DIAGNOSTIC: the file store is
+            # the suspected bottleneck, and this isolates the disk path from
+            # everything else. It is not durable and must not ship.
+            try:
+                await js.delete_stream(cfg["stream"])
+            except Exception as e:  # noqa: BLE001
+                if "not found" not in str(e).lower():
+                    raise
+            await js.add_stream(
+                name=cfg["stream"],
+                subjects=[cfg["subject"]],
+                max_age=cfg["max_age_s"],
+                max_bytes=cfg["max_bytes"],
+                discard="old",
+                storage=os.environ.get("HARNESS_NATS_STORAGE", "file"),
+            )
             after = (await js.stream_info(cfg["stream"])).state.messages
             return NatsResult(
                 True,
                 messages_before=before,
                 messages_after=after,
-                detail=f"purged {cfg['stream']} directly",
+                detail=f"recreated {cfg['stream']} directly",
             )
         finally:
             await nc.close()

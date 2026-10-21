@@ -409,13 +409,31 @@ async def main():
                     # asyncio's, so a quiet pull loop previously looked
                     # identical to a healthy idle one. Report the type.
                     print("fetch error %s: %s" % (type(e).__name__, e))
-                    if "connection closed" in str(e).lower():
-                        # The server went away (restart, network blip). The
-                        # subscription is bound to the old connection, so
-                        # re-create it; otherwise every later fetch fails the
-                        # same way forever and the pipeline stops draining
-                        # while looking perfectly healthy.
-                        print("connection lost, re-subscribing")
+                    msg_text = str(e).lower()
+                    gone = any(
+                        marker in msg_text
+                        for marker in (
+                            "connection closed",
+                            "consumer not found",
+                            "no stream",
+                            "stream not found",
+                            "invalid durable",
+                        )
+                    )
+                    if gone:
+                        # Either the server went away (restart, network blip) or
+                        # the stream and its durable were deleted underneath us
+                        # (the benchmark harness recreates the stream between
+                        # scenarios, which takes the durable with it).
+                        #
+                        # Either way the subscription is bound to something
+                        # that no longer exists, so re-create it; otherwise
+                        # every later fetch fails the same way forever and the
+                        # pipeline stops draining while looking perfectly
+                        # healthy -- every pod Running, no errors in the
+                        # preflight, and no messages moving.
+                        print("subscription lost (%s), re-subscribing"
+                              % type(e).__name__)
                         try:
                             sub = await create_pull_subscription(js)
                             print("re-subscribed to %s" % SUBJECT)
