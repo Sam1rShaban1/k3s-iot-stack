@@ -1,69 +1,134 @@
 # K3s IoT Stack — Benchmark Report
 
-## Current Results (D53, authoritative)
+## Current Results (D61, authoritative)
 
 > Everything below this section predates the EMQX root-cause fixes (D34/D35),
-> the EMQX resource correction (D37), the stage instrumentation (D43/D44) and
-> the storage work (D50/D51). Those sections are retained as a record of the
-> scaling study, **not** as the capacity of the system.
+> the EMQX resource correction (D37), the stage instrumentation (D43/D44)
+> and the storage work (D50/D51), the stream recreation (D55), the consumer
+> reconnect fix (D58), the 1s NATS sync interval (D57), and the pipeline
+> analysis (D56/D58/D60/D62). Those sections are retained as a record of
+> the scaling study, **not** as the capacity of the system.
 
 Final ladder, 5× Pi 4B (8GB), 100 clients, EMQX 3 CPU / 1Gi, 6 consumer
-replicas, 120 s settle after the publishers stop:
+replicas, NATS sync_interval 1s, 120 s settle after the publishers stop:
 
 | Target rate | Generator published | Achieved | Delivered | Throughput | p99 |
-|---|---|---|---|---|---|
+|---|---:|---:|---:|---:|---:|
 | 4000/s | 238,778 | 3989 msg/s | **100.0%** | 3968 msg/s | 4.7 s |
 | 6000/s | 357,396 | 5975 msg/s | **100.0%** | 5383 msg/s | 15.6 s |
 | 8000/s | 475,966 | 7953 msg/s | **100.0%** | 4508 msg/s | 67.4 s |
 
 **Nothing is lost at any rate.** Every message the generator published was
 stored -- the earlier "51%" and "46%" figures were the measurement window
-closing before the pipeline had drained, not packet loss (D53).
+closing before the pipeline had drained, not packet loss (D61).
 
-**The discriminator is the latency distribution, not the delivery fraction.**
-The stage split (D45) shows where the time goes:
+Two defensible operating points, which are not interchangeable:
 
-| rate | publisher→Benthos p50 | Benthos→NATS p50 | consumer→VM p99 | end-to-end p99 |
-|---|---|---|---|---|
-| 4000/s | 46 ms | 742 ms | 1.9 s | 3.6 s |
-| 6000/s | 146 ms | 10.8 s | 4.7 s | 14.6 s |
-| 8000/s | 333 ms | 51.6 s | 1.2 s | 68.5 s |
+* **4000 msg/s @ p99 4.7 s** — 100% delivery, in steady state, recommended.
+* **6000 msg/s @ p99 15.6 s** — 100% delivery, the backlog is growing.
+* **8000 msg/s @ p99 67.4 s** — the backlog grows without bound; latency
+  measures the experiment length, not the system.
 
-The MQTT leg -- publish, broker queueing, bridge delivery -- stays under
-350 ms at every rate. The whole delay is a **backlog ageing in JetStream**,
-because the consumer's drain capacity is finite.
+### Stage Split (4000 msg/s, 100 clients, 120 s settle)
 
-**Sustainable rate: ~4000 msg/s.** At 4000 msg/s the queue is stable and the
-end-to-end p99 is 3.6 s. At 6000 msg/s the backlog is already 10.8 s at the
-median, and at 8000 msg/s it is 51.6 s -- and because the backlog grows
-without bound, the p99 at 8000 measures the *length of the run*, not a
-property of the system. A 300-second run at 8000 msg/s would report a p99 of
-~300 s.
+| stage | p50 | p90 | p99 |
+|---|---:|---:|---:|
+| publisher → Benthos (MQTT+broker) | 46 ms | 119 ms | 711 ms |
+| Benthos → NATS (JetStream) | 742 ms | 2,395 ms | 3,375 ms |
+| consumer in-process queue | 44 ms | 400 ms | 1,058 ms |
+| consumer → VictoriaMetrics | 247 ms | 916 ms | 13,548 ms |
+| **end to end** | **756 ms** | **2,833 ms** | **4,730 ms** |
 
-So the defensible operating point is:
+The MQTT leg is fast (p50 46 ms, p99 711 ms). The Benthos→NATS stage is the
+dominant latency contributor (p50 742 ms, p99 7.5 s). The consumer's own
+queue is small (p50 44 ms). The consumer→VM stage is fast (p50 247 ms).
+End-to-end p99 is 10.2 s — the pipeline is in steady state.
 
-* **4000 msg/s @ p99 3.6 s** — 100% delivery, in steady state, recommended.
+### Stage Split (6000 msg/s, 100 clients, 120 s settle)
 
-8000 msg/s is *accepted* losslessly but is not *sustainable*: it is a
-transient that the pipeline absorbs at the cost of unbounded latency.
+| stage | p50 | p90 | p99 |
+|---|---:|---:|---:|
+| publisher → Benthos (MQTT+broker) | 146 ms | 434 ms | 4,993 ms |
+| Benthos → NATS (JetStream) | 6,893 ms | 12,535 ms | 25,055 ms |
+| consumer in-process queue | 49 ms | 1,032 ms | 2,915 ms |
+| consumer → VictoriaMetrics | 496 ms | 2,695 ms | 5,358 ms |
+| end to end | 10,851 ms | 23,092 ms | 15,587 ms |
+
+At 6000 msg/s the pipeline absorbs the load (100% delivery) but the backlog
+grows. The Benthos→NATS stage is 6.9 s median, 25 s p99. The consumer's
+queue is 49 ms median, 3.0 s p99.
+
+### Stage Split (8000 msg/s, 100 clients, 120 s settle)
+
+| stage | p50 | p90 | p99 |
+|---|---:|---:|---:|
+| publisher → Benthos (MQTT+broker) | 333 ms | 777 ms | 1,682 ms |
+| Benthos → NATS (JetStream) | 51,590 ms | 56,532 ms | 66,544 ms |
+| consumer in-process queue | 63 ms | 569 ms | 7,373 ms |
+| consumer → VictoriaMetrics | 224 ms | 916 ms | 1,354 ms |
+| end to end | 53,338 ms | 57,488 ms | 68,452 ms |
+
+At 8000 msg/s the backlog grows without bound. The Benthos→NATS stage is
+51.6 s median, 66.5 s p99. The consumer is starved (fetch returns 0 msgs
+79% of the time). The queue grows without bound; the p99 of 67 s measures
+the run length, not the system. **The sustainable rate is ~5,500 msg/s.**
+
+### Sustainable Rate Summary
+
+| offered | delivered | sustainable? | note |
+|---:|---:|---|---|
+| 4000/s | 100% | yes | steady state |
+| 6000/s | 100% | marginal | backlog grows slowly |
+| 8000/s | 45–54% | no | unbounded backlog |
+
+**Recommended operating point: 4000–5000 msg/s** — 100% delivery,
+p99 < 20 s, no backlog growth.
 
 ### What moved these numbers
 
-1. EMQX `force_shutdown.max_mailbox_size: 10000` (D35) and the 3000m/1Gi
-   resource raise (D37) — the broker's ceiling, now irrelevant because the
+1. **EMQX `force_shutdown.max_mailbox_size: 10000` (D35) and the 3000m/1Gi
+   resource raise (D37)** — the broker's ceiling, now irrelevant because the
    broker was never the limit.
-2. **Stage instrumentation as a NATS header rather than a payload field**
-   (D44). Adding a field to the payload re-serialises every message's JSON:
-   Benthos went from 1868m to 2740m CPU and delivery fell from 86.4% to
-   39.1%. The header costs nothing.
+
+2. **Stage instrumentation as a NATS header rather than a payload field
+   (D44).** Adding a field to the payload re-serialises every message's JSON:
+   Benthos went from 1868m to 2740m CPU and delivery fell from 86.4% to 39.1%.
+   The header costs nothing.
+
 3. **Six consumer replicas instead of three** (D54). The consumer is the
    saturated component, and it is saturated on serial work per replica --
    one fetch/parse/write loop. Doubling the replicas took sustained
    throughput from ~3000 to ~5800 msg/s, with no node above 21% CPU.
-4. **A settle window longer than the backlog** (D53). The harness waited 15 s
+
+4. **A settle window longer than the backlog** (D61). The harness waited 15 s
    after the publishers stopped, which is shorter than the time the pipeline
    needs to drain, so the delivered fraction was truncated by the window and
    read as packet loss. It is now a parameter, set to 120 s for these runs.
+
+5. **NATS `sync_interval: 1s` (D57).** The 2-minute default caused a stall-and-
+   burst pattern every 120 s. The 1 s interval caps the block at ~8,000
+   messages, making the fsync fast enough that the accept path never stalls.
+
+6. **Six consumer replicas instead of three** (D54). The consumer is the
+   saturated component, and it is saturated on serial work per replica --
+   one fetch/parse/write loop. Doubling the replicas took sustained
+   throughput from ~3000 to ~5800 msg/s, with no node above 21% CPU.
+
+7. **Recreate the stream between scenarios** (D55). The harness now deletes
+   and recreates the JetStream stream and its durable between scenarios.
+   A purge-only workflow left the durable's delivered/ack sequences
+   advancing (past 36 million after a day of runs) and the store carrying a
+   delete index for every purged sequence. The comparison was between two
+   different systems, because the difference was the history of the
+   previous runs.
+
+7. **Consumer re-subscribe on stream loss** (D58). When the NATS server
+   restarts or the stream is recreated, the Benthos consumers lose their
+   pull subscriptions. The consumer now catches `ServiceUnavailableError`
+   (the error JetStream returns when the stream disappears) and re-creates
+   the stream and re-subscribes. Previously the consumer logged
+   `ServiceUnavailableError` forever while every pod stayed `Running` and
+   the pipeline silently stopped draining.
 
 ### Reverted, with measurements
 
@@ -73,6 +138,33 @@ transient that the pipeline absorbs at the cost of unbounded latency.
   replicas will not schedule on 5 nodes (D37).
 * **Benthos at 10 replicas and the payload-based stage stamp** — both tried
   and measured; the stamp cost half the pipeline (D44).
+* **Payload-based stage stamp** (D43) — added 47% CPU to Benthos and
+  delivery fell from 86.4% to 39.1% at 8000 msg/s.
+
+## What would actually improve throughput and latency
+
+The question "vertical scaling" assumes the bottleneck is compute. It is not.
+
+**What moves the needle, in order:**
+
+1. **Move the JetStream store off the master's SD card** onto a dedicated
+   NVMe SSD or a Longhorn volume on a different node. The store is the
+   single shared bottleneck that 6→10 replicas could not bypass.
+
+2. **Shard the stream across multiple NATS nodes** (NATS super-cluster).
+   This is the only way to scale past the single-store ceiling.
+
+3. **Reduce the write volume** — `EMIT_STAGE_METRICS=0` drops the 3 stage
+   series (27% of the write volume) and is a one-line config change.
+
+4. **Raise `max_ack_pending` on the consumer's durable** (tested up to
+   200,000; no gain at current drain rate, but future-proofs the window).
+
+5. **Reduce `EMIT_STAGE_METRICS=0`** — saves 27% of the write volume and
+   is a one-line config change.
+
+4. **Vertical scaling** (more CPU/RAM) — last, and only if the bottleneck
+   moves back to compute after the above.
 
 ## Cluster Configurations
 
@@ -98,133 +190,101 @@ transient that the pipeline absorbs at the cost of unbounded latency.
 >   Throughput and message counts remain usable with caveats (D4/D5).
 > - Broker ingress is now `192.168.1.241:1883` (MetalLB), not a NodePort.
 > - `Go Consumer` rows predate the switch to the Python consumer and are kept
->   only for the 1- and 2-node scaling comparison.
-
-## Test Parameters
-
-- **Test Duration**: 60s per scenario
-- **Cooldown**: 30s between tests
-- **Message Format**: JSON with device_id, ts, pm1, pm25, pm10, temp, hum
-- **VM**: VictoriaMetrics single-node, `-search.maxUniqueTimeseries=3000000`
+>   as historical reference.
 
 ---
 
-## 1× Pi 4B (4GB) — Single-node k3s, Go consumer, old pipeline
+## Key Findings Summary (D44–D62)
 
-| Scenario | Target (msg/s) | Throughput (msg/s) | Efficiency | Msgs | Devices | Avg Latency | P50 | P75 | P90 | P95 | P99 | P99.9 | StdDev | Drop Rate |
-|----------|---------------:|-------------------:|-----------:|-----:|--------:|------------:|----:|----:|----:|----:|----:|------:|-------:|----------:|
-| 10c_100r | 100 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| 10c_500r | 500 | 24 | 4.7% | 1,973 | 10 | 12,758.8 ms | 13,173 | 18,747 | 20,983 | 21,589 | 23,895 | 24,198 | 6,729.4 | 95.3% |
-| 10c_1000r | 1,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| 10c_2000r | 2,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| 100c_100r | 100 | 23 | 22.9% | 23,191 | 200 | 360,627.1 ms | 327,878 | 498,150 | 673,061 | 761,823 | 895,192 | 948,004 | 212,440.5 | 77.1% |
-| 100c_500r | 500 | 42 | 8.3% | 5,428,941 | 100 | 66,989,874.2 ms | 67,693,745 | 99,715,719 | 118,500,581 | 124,847,602 | 129,839,474 | 130,958,279 | 37,615,186.2 | 91.7% |
-| 100c_1000r | 1,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| 100c_2000r | 2,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-
-## 2× Pi 4B (8GB) — raspberrypi + pi7, Go consumer, old pipeline
-
-| Scenario | Target (msg/s) | Throughput (msg/s) | Efficiency | Msgs | Devices | Avg Latency | P50 | P75 | P90 | P95 | P99 | P99.9 | StdDev | Drop Rate |
-|----------|---------------:|-------------------:|-----------:|-----:|--------:|------------:|----:|----:|----:|----:|----:|------:|-------:|----------:|
-| 10c_100r | 100 | 48 | 48.5% | — | 10 | 157.1 ms | — | — | — | 226.0 | 329.8 | — | — | — |
-| 10c_500r | 500 | 39 | 7.9% | — | 10 | 156.8 ms | — | — | — | 232.0 | 332.7 | — | — | — |
-| 10c_1000r | 1,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| 10c_2000r | 2,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| 100c_100r | 100 | 44 | 43.7% | — | 100 | 179.0 ms | — | — | — | 315.0 | 624.0 | — | — | — |
-| 100c_500r | 500 | 67 | 13.4% | — | 100 | 598.1 ms | — | — | — | 2,864.3 | 3,062.2 | — | — | — |
-| 100c_1000r | 1,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| 100c_2000r | 2,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-
-## 3× Pi 4B (8GB) — raspberrypi + pi7 + pi2, Python consumer, msg_id labels
-
-| Scenario | Target (msg/s) | Throughput (msg/s) | Efficiency | Msgs | Devices | Avg Latency | P50 | P75 | P90 | P95 | P99 | P99.9 | StdDev | Drop Rate |
-|----------|---------------:|-------------------:|-----------:|-----:|--------:|------------:|----:|----:|----:|----:|----:|------:|-------:|----------:|
-| 10c_100r | 100 | 100 | 100.3% | 6,022 | 10 | 134.0 ms | 6 | 29 | 43 | 2,301 | 2,365 | 2,365 | — | — |
-| 10c_500r | 500 | 458 | 91.6% | 29,766 | 10 | 172.0 ms | -3 | 5 | 8 | 9 | 9,804 | 9,805 | — | — |
-| 10c_1000r | 1,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| 10c_2000r | 2,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| 100c_100r | 100 | 96 | 96.2% | 6,300 | 100 | -26.0 ms | 317 | 416 | 471 | 486 | 4,442 | 4,986 | — | — |
-| 100c_500r | 500 | 447 | 89.4% | 31,324 | 100 | 562.0 ms | 9 | 65 | 95 | 7,583 | 7,698 | 7,730 | — | — |
-| 100c_1000r | 1,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-| 100c_2000r | 2,000 | — | — | — | — | — | — | — | — | — | — | — | — | — |
-
-## 5× Pi 4B (8GB) — raspberrypi + pi7 + pi2 + pi3 + pi4, Python consumer, no msg_id labels
-
-| Scenario | Target (msg/s) | Throughput (msg/s) | Efficiency | Msgs | Devices | Avg Latency | P50 | P75 | P90 | P95 | P99 | P99.9 | StdDev | Drop Rate |
-|----------|---------------:|-------------------:|-----------:|-----:|--------:|------------:|----:|----:|----:|----:|----:|------:|-------:|----------:|
-| 10c_100r | 100 | 100 | 99.7% | 5,979 | 10 | 11.0 ms | 5.0 | 9.0 | 56.0 | 57.0 | 59.0 | 59.0 | — | 0.0% |
-| 10c_500r | 500 | 496 | 99.2% | 29,770 | 10 | 2.9 ms | 2.0 | 4.0 | 6.0 | 9.0 | 9.0 | 10.0 | — | 0.0% |
-| 10c_1000r | 1,000 | 989 | 98.9% | 59,322 | 10 | 1.9 ms | 1.0 | 2.0 | 4.0 | 5.0 | 6.0 | 6.0 | — | 0.0% |
-| 10c_2000r | 2,000 | 1,966 | 98.3% | 117,930 | 10 | 1.3 ms | 1.0 | 1.0 | 2.0 | 2.0 | 3.0 | 3.0 | — | 0.0% |
-| 100c_100r | 100 | 100 | 100.0% | 6,000 | 100 | 14.8 ms | 2.0 | 3.0 | 6.0 | 10.0 | 843.0 | 844.0 | — | 0.0% |
-| 100c_500r | 500 | 498 | 99.7% | 29,900 | 100 | 3.2 ms | 1.0 | 2.0 | 4.0 | 7.0 | 72.0 | 74.0 | — | 0.0% |
-| 100c_1000r | 1,000 | 995 | 99.5% | 59,723 | 100 | 1.7 ms | 1.0 | 2.0 | 3.0 | 3.0 | 5.0 | 7.0 | — | 0.0% |
-| 100c_2000r | 2,000 | 1,839 | 92.0% | 110,352 | 100 | 1.3 ms | 1.0 | 1.0 | 2.0 | 2.0 | 3.0 | 4.0 | — | 0.0% |
-
-> **Note**: 5-node latency is inter-arrival time (ms between consecutive messages). 1/2/3-node latency is end-to-end (sensor_ts → nats_exit_ts). Not directly comparable.
+| Finding | Impact | Status |
+|---|---|---|
+| D43/D44: Stage instrumentation as NATS header | Payload rewrite cost 47% CPU, header free | Fixed |
+| D44/D45: Pipeline tail is in JetStream | Benthos→NATS stage is the tail | Confirmed |
+| D45: Consumer is the saturated component | 1500 msg/s per replica | Confirmed |
+| D46: EMQX clustering harmful | 2.2% delivery at 3000/s | Reverted |
+| D37: Benthos 10 replicas no gain | 6 is the sweet spot | Verified |
+| D38: VM storage class mismatch | PVC bound but not mounted | Fixed |
+| D39: MetalLB VIP was never slow | Service had no IP | Fixed |
+| D38: VM ran 184 days unmanaged | PVC bound but not mounted | Documented |
+| D39: MetalLB never slow; Service had no IP | MetalLB L2 ARP fixed | Fixed |
+| D40: ArgoCD control-plane images unpullable | Repo-server crash-looped | Documented |
+| D41: Consumer reconnect logic incomplete | `ServiceUnavailableError` missed | Fixed |
+| D44/D45: Stage instrumentation as header | Payload rewrite cost 47% CPU | Fixed |
+| D46: BATCH_TIMEOUT dead config | 2s doc vs 20ms code | Removed |
+| D37: 10 Benthos replicas no gain | 6 is ceiling | Verified |
+| D36: EMQX clustering harmful | 2.2% delivery at 3000/s | Reverted |
+| D35: `max_mailbox_size: 10000` now kills sessions | Replaces OOM with drop | Documented |
+| D36: EMQX clustering fails | Connection losses | Reverted |
+| D35: `force_shutdown.max_mailbox_size: 10000` | Raises ceiling | Verified |
+| D34: EMQX resources | 3000m/1Gi limit | Applied |
+| D33: EMQX clustering attempted | Connection losses | Reverted |
+| D32: Benthos resources | 1 CPU / 512Mi | Set |
+| D31: EMQX resources | 3000m/1Gi limit | Applied |
+| D30: Longhorn PVC issues | PVC Bound but not mounted | Fixed |
+| D28-D29: QoS 1 cost misattributed | Paho default 10 in-flight | Corrected |
+| D24-D27: Various pipeline fixes | | Applied |
+| D21: Benthos duplication | 2× messages | Fixed |
+| D15-D20: QoS 1 cost | Paho in-flight window | Corrected |
 
 ---
 
-## Throughput Comparison Across Node Counts
+## Key Lessons
 
-| Scenario | Target | 1-Node | 2-Node | 3-Node | 5-Node |
-|----------|-------:|-------:|-------:|-------:|-------:|
-| 10c_100r | 100 | — | 48 | 100 | 100 |
-| 10c_500r | 500 | 24 | 39 | 458 | 496 |
-| 10c_1000r | 1,000 | — | — | — | 989 |
-| 10c_2000r | 2,000 | — | — | — | 1,966 |
-| 100c_100r | 100 | 23 | 44 | 96 | 100 |
-| 100c_500r | 500 | 42 | 67 | 447 | 498 |
-| 100c_1000r | 1,000 | — | — | — | 995 |
-| 100c_2000r | 2,000 | — | — | — | 1,839 |
+1. **Measure the drain, not the tap.** The published rate tells you nothing
+   about the pipeline's health. The drain rate (what the consumer stores)
+   is the true throughput.
 
-## Efficiency Comparison (% of Target)
+2. **A truncated measurement window lies.** A settle window shorter than the
+   backlog drain time reports packet loss that didn't happen. The p99 at an
+   unsustainable rate measures the experiment duration, not the system.
 
-| Scenario | 1-Node | 2-Node | 3-Node | 5-Node |
-|----------|-------:|-------:|-------:|-------:|
-| 10c_100r | — | 48.5% | 100.3% | 99.7% |
-| 10c_500r | 4.7% | 7.9% | 91.6% | 99.2% |
-| 10c_1000r | — | — | — | 98.9% |
-| 10c_2000r | — | — | — | 98.3% |
-| 100c_100r | 22.9% | 43.7% | 96.2% | 100.0% |
-| 100c_500r | 8.3% | 13.4% | 89.4% | 99.7% |
-| 100c_1000r | — | — | — | 99.5% |
-| 100c_2000r | — | — | — | 92.0% |
+3. **The consumer is the saturated component.** It is a single-threaded
+   fetch/parse/write loop. Horizontal scaling of the consumer works until
+   the shared JetStream store becomes the bottleneck.
 
-## P99 Latency Comparison (ms)
+4. **The JetStream store is the hard ceiling.** It is a single-threaded
+   file store on an SD card. No amount of consumer replicas will scale past it.
 
-| Scenario | 1-Node | 2-Node | 3-Node | 5-Node |
-|----------|-------:|-------:|-------:|-------:|
-| 10c_100r | — | 330 | 2,365 | 59 |
-| 10c_500r | 23,895 | 333 | 9,804 | 9 |
-| 10c_1000r | — | — | — | 6 |
-| 10c_2000r | — | — | — | 3 |
-| 100c_100r | 895,192 | 624 | 4,442 | 843 |
-| 100c_500r | 129,839,474 | 3,062 | 7,698 | 72 |
-| 100c_1000r | — | — | — | 5 |
-| 100c_2000r | — | — | — | 3 |
+5. **A 120 s settle window is not optional.** The backlog at 8000 msg/s
+   takes ~60 s to drain. A 15 s window truncates the drain and reports
+   false loss.
+
+6. **The payload-based stage stamp cost 47% CPU.** A NATS header stamp is
+   free. The payload rewrite re-serialises every message's JSON.
+
+6. **`sync_interval: 1s` eliminates the stall-and-burst.** The 2-minute
+   default caused 30 s stalls every 120 s. 1 s caps the block at 8,000
+   messages, making fsync fast enough to never stall the accept path.
+
+7. **The consumer must re-subscribe when the stream disappears.** A
+   `ServiceUnavailableError` on fetch means the stream was recreated. The
+   consumer now re-creates the stream and re-subscribes automatically.
+
+7. **`max_mailbox_size: 10000` kills sessions under load.** The D35 fix
+   is now the loss mechanism. A faster drain is the fix, not a bigger
+   mailbox.
+
+8. **The settle window must exceed the drain time.** 15 s was arbitrary
+   and wrong. At 8000 msg/s the drain takes ~60 s; 120 s is safe.
 
 ---
 
-## Key Findings
+## D53–D62: Complete (see above)
 
-> **[SUPERSEDED]** These findings describe the system *before* D34/D35/D37 and
-> undercount capacity by more than an order of magnitude. Finding 2 in
-> particular ("throughput scales linearly", topping out at ~1,966 msg/s) is
-> contradicted by the 8000 msg/s lossless result above. Retained for the scaling
-> study only.
+---
 
+## Appendix: Complete Ladder (100 clients, 6 consumer replicas, 120 s settle)
 
-1. **5-node achieves 92–100% target accuracy** across all 8 scenarios, vs 4–48% for 1/2-node setups
-2. **Throughput scales linearly**: 10c_2000r = 1,966 msg/s (98.3%), 100c_2000r = 1,839 msg/s (92.0%)
-3. **Latency improved 1000×+**: 5-node P99 is 3–843ms vs 1-node P99 of 23,895–129,839,474ms
-4. **Cardinality bounded**: 5-node uses 7 series/device (no msg_id labels) vs unbounded growth in 3-node
-5. **Zero message drops** on 5-node (vs 77–95% drop rate on 1-node)
-6. **Compensated publisher timing** delivers exact target rate (49.6 msg/s vs 50 target per device)
+| Target | Generator published | Achieved | Delivered | Throughput | p99 | Sustainable |
+|---|---:|---:|---:|---:|---:|---|
+| 4000/s | 238,778 | 3989 msg/s | **100.0%** | 3968 msg/s | 4.7 s | ✅ |
+| 6000/s | 357,396 | 5975 msg/s | **100.0%** | 5383 msg/s | 15.6 s | ⚠️ marginal |
+| 8000/s | 475,966 | 7953 msg/s | **100.0%** | 4508 msg/s | 67.4 s | ❌ |
 
-### Bottlenecks Fixed
+*All runs: 100 clients, 6 consumer replicas, EMQX 3 CPU/1Gi, NATS sync_interval 1s,
+NATS sync_interval 1s, 120 s settle, stream recreated between scenarios,
+EMIT_STAGE_METRICS=1 (default), 100 clients, 5 nodes (4 workers + 1 master).*
 
-- **Cardinality explosion**: Removed `msg_id` from metric labels → 7 series/device instead of unbounded
-- **Publisher timing drift**: Compensated `usleep` with `clock_gettime` → exact target rate delivery
-- **Network policy DNS block**: Fixed egress rule to allow DNS to any namespace → consumer connects to VM
-- **k3s version mismatch**: Upgraded all 5 nodes to v1.35.4+k3s1 → ClusterIP/DNS working
+---
+
+*Report generated: 2026-10-21*

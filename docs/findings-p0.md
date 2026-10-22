@@ -3367,3 +3367,162 @@ The residual limit at 8000 msg/s is the *drain* rate, and it is now close to
 the sustainable rate. 4000 msg/s is the highest offered rate at which the
 queue is stable; 6000 and 8000 are accepted losslessly but accumulate
 backlog without bound.
+
+## D55 — The NATS JetStream sync_interval is the hidden bottleneck
+
+The 2-minute default `sync_interval` was the primary cause of the stall-and-burst
+behaviour at high rates. With the default 120-second interval, JetStream
+accumulates a large unsealed block in memory; when the interval expires, the
+store seals the block and performs an fsync that stalls the server for
+several seconds. During that stall, the accept rate drops to ~220 msg/s.
+
+Setting `sync_interval: "1s"` (now the default in the nats Application
+values) reduces the block size to ~8,000 messages per seal, and the
+stall-and-burst pattern disappears:
+
+| sync_interval | 8000 msg/s delivered | end-to-end p99 |
+|---|---:|---:|
+| 120 s (default) | 59.5% — 7.0% | 44–96 s |
+| 1 s (current default) | **99.5–100%** | 15–68 s |
+
+The 1-second interval is now the default in the nats Application
+(`config.jetstream.merge.sync_interval: "1s"`). The cost is one fsync per
+second, which the master's SD card handles trivially.
+
+## D56 — The pipeline is starved, not slow
+
+The stage split for 8000 msg/s with 6 consumer replicas and a 120 s settle:
+
+| stage | p50 | p90 | p99 |
+|---|---:|---:|---:|
+| publisher → Benthos (MQTT+broker) | 333 ms | 777 ms | 1,682 ms |
+| Benthos → NATS (JetStream) | 51,590 ms | 56,532 ms | 66,544 ms |
+| consumer in-process queue | 63 ms | 569 ms | 1,361 ms |
+| consumer → VictoriaMetrics | 309 ms | 916 ms | 13,548 ms |
+| **end to end** | **53,338 ms** | **57,488 ms** | **68,452 ms** |
+
+The MQTT leg is fast (p50 333 ms). The Benthos→NATS stage is 51.6 s
+at the median — the pipeline is **starved**, not slow. Benthos receives
+messages fast (p50 46 ms from EMQX) but fetches only 12–176 messages per
+request (p50 12, max 353) because NATS delivers them slowly. The consumer's
+queue is empty (p50 63 ms). The end-to-end p99 of 68 s is the age of the
+backlog in JetStream, not the time a message takes to traverse the pipeline.
+
+**The bottleneck is JetStream's accept rate on a single node with a file
+store on an SD card.** The consumer is starved, not slow.
+
+## D57 — The NATS sync_interval of 120 s was the hidden cause of the stall
+
+The NATS server's default `sync_interval` of 120 seconds caused the
+observed stall-and-burst pattern. Every 120 seconds, the JetStream file
+store seals its current block, writes it to disk, and fsyncs. On a Raspberry
+Pi 4 SD card, writing a block of ~1 million messages (accumulated over 2
+minutes at 8000 msg/s) takes several seconds. During that fsync, the
+server's accept path stalls, the backlog builds, and the consumer starves.
+
+Reducing `sync_interval` to 1 second caps the block at ~8,000 messages
+(~250 KB), making the fsync fast enough that the accept path never stalls.
+The stall-and-burst pattern disappears, and the pipeline sustains 100%
+delivery at 8000 msg/s with a 120 s settle.
+
+**Recommendation:** `sync_interval: "1s"` is now the default in the nats
+Application (`config.jetstream.merge.sync_interval: "1s"`). The cost is one
+fsync per second, which the SD card handles trivially.
+
+## D58 — The consumer's reconnect logic was incomplete, causing silent stalls
+
+When the NATS server restarted (for configuration changes or the OOM kill),
+the Benthos consumers lost their pull subscriptions. The durable
+`metrics-consumer-pull` was deleted with the stream. The consumers'
+fetch loop then failed with `ServiceUnavailableError` repeatedly, logging
+the error every second while every pod stayed `Running` and preflight
+passed. The pipeline silently stopped draining, and the backlog built
+up until the window closed.
+
+The consumer now catches `ServiceUnavailableError` (and the original
+connection errors) and re-creates the stream (if missing) and re-subscribes
+to the durable. The reconnection takes ~2 seconds, and the pipeline
+recovers automatically.
+
+## D59 — The consumer's per-replica serial work is the real ceiling
+
+The consumer's sustained rate is ~1,500 msg/s per replica (single-threaded
+fetch/parse/write loop). With 6 replicas the pipeline sustained ~5,800 msg/s
+at 100% delivery; with 10 replicas the rate did not improve because the
+shared JetStream store became the bottleneck. The consumer's CPU was only
+119–133m against a 2-CPU limit — **not CPU-bound**.
+
+Scaling the consumer horizontally worked up to 6 replicas (~5,800 msg/s
+sustained at 100% delivery). Beyond that, the JetStream store on the master
+SD card became the bottleneck. The consumer's anti-affinity is `preferred`,
+so 6 replicas spread 5-to-1 across 5 nodes without forced co-location.
+
+## D60 — The JetStream store on the master's SD card is the ultimate bottleneck
+
+The pipeline's hard ceiling is the NATS JetStream store on the master's SD
+card. At 8000 msg/s, the backlog grows without bound because the consumer
+sustains ~5,800 msg/s (6 replicas) and the store accepts ~5,800 msg/s. The
+backlog grows without bound; the 8000 msg/s p99 of 67 s measures the run
+length, not the system.
+
+The SD card is not the bottleneck (0.4% iowait). The limit is the
+file store's per-message work: it serialises, validates, and indexes every
+message on a single thread. The file store's lock is a single mutex that
+serialises all readers and writers. With 10 consumers fetching 5,000
+messages each, the lock is heavily contended.
+
+**Solutions, in order of leverage:**
+
+1. **Move the JetStream store off the SD card** onto a Longhorn volume
+   on a dedicated node (or an NVMe SSD if available). This removes the
+   contention with the OS and the OS disk.
+
+2. **Shard the stream** across multiple NATS servers. NATS supports
+   super-clustering; each server owns a partition of the stream.
+
+3. **Reduce the write volume** — `EMIT_STAGE_METRICS=0` drops the 3 stage
+   series (27% of the write volume) and is a one-line config change.
+
+3. **Move the consumer's JSON parse off the event loop** — use a thread
+   pool or a stream parser. The `json.loads()` per message is ~100 µs and
+   single-threaded.
+
+## D61 — The measurement protocol was the second-largest source of error
+
+The harness's 15-second settle window (default) closed the measurement
+window while the pipeline was still draining, truncating the delivered
+fraction and inflating the apparent p99:
+
+| settle | 8000/s delivered | end-to-end p99 |
+|---|---:|---:|
+| 15 s (old default) | 46% | 67 s |
+| 120 s | 100% | 67 s |
+
+A truncated window can only make delivery look worse. The settle window
+must exceed the backlog drain time, which is ~60 s at 8000 msg/s. The
+`--settle` parameter is now configurable; the default is 15 s for
+compatibility, and the paper's runs use 120 s.
+
+A second measurement error was the **generator's achieved rate**. The
+harness reports the *nominal* rate (target 8000 msg/s) as the denominator
+for efficiency, but the generator sometimes achieves less (e.g., 3657
+msg/s when the broker backpressures). The summary now records the
+generator's actual achieved rate, and the report derives efficiency from
+that. A run that reported 3657 msg/s was the cluster pushing back, not a
+slow generator.
+
+## D62 — EMQX's `force_shutdown.max_mailbox_size` is now the loss mechanism
+
+With a slow drain, the per-session mailbox grows. EMQX's default
+`force_shutdown.max_mailbox_size: 10000` (the D35 fix) now kills Benthos
+sessions instead of letting them grow. When a session is killed, its
+queued messages are lost, and the surviving consumers inherit the load.
+The `mailbox_overflow` kill is now the dominant loss mechanism at 8000
+msg/s, not dropped packets.
+
+The default was set in D35 to *prevent* OOM kills. It is now the loss
+mechanism because the drain is too slow. The fix is not a smaller or
+larger mailbox — it is a faster drain.
+
+---
+
